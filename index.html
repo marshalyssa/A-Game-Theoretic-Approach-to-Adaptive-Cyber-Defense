@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+        content="Cybersecurity Decision Agent — MITRE ATT&CK adversarial modeling with Bayesian inference, reinforcement learning, and game theory.">
+    <title>Cybersecurity Decision Agent — ATT&CK Adversarial Modeling</title>
+    <link rel="stylesheet" href="index.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <h1>⚔️ Cybersecurity Decision Agent</h1>
+            <p class="subtitle">MITRE ATT&CK Adversarial Modeling — Bayesian Inference × Game Theory × Reinforcement
+                Learning</p>
+
+            <!-- Tab Switcher -->
+            <div class="tab-bar" id="tab-bar">
+                <button class="tab-btn active" data-tab="simulation" id="tab-sim">🎮 Simulation</button>
+                <button class="tab-btn" data-tab="live" id="tab-live">📡 Live IOC Analysis</button>
+            </div>
+        </header>
+
+        <div class="main-grid">
+            <!-- ─── Sidebar ──────────────────────────────────────────── -->
+            <aside class="sidebar">
+                <!-- ═══ IOC Input Panel (Live Mode) ═══ -->
+                <div class="card" id="ioc-panel" style="display:none;">
+                    <div class="card-header">
+                        <div class="icon green">📡</div>
+                        <h3>IOC Input</h3>
+                        <span class="badge badge-green" id="feed-status-badge">FEEDS: —</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="ioc-input">Indicators <small>(one per line: IP, domain, hash, URL)</small></label>
+                        <textarea id="ioc-input" class="ioc-textarea" rows="5"
+                            placeholder="45.33.32.156&#10;evil-domain.com&#10;d41d8cd98f00b204e9800998ecf8427e&#10;https://malicious.example/payload"></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label>CTI Feeds</label>
+                        <div class="feed-checks">
+                            <label class="feed-check"><input type="checkbox" id="feed-otx" checked> <span
+                                    class="feed-tag otx">OTX</span></label>
+                            <label class="feed-check"><input type="checkbox" id="feed-vt" checked> <span
+                                    class="feed-tag vt">VirusTotal</span></label>
+                            <label class="feed-check"><input type="checkbox" id="feed-abuse" checked> <span
+                                    class="feed-tag abuse">AbuseIPDB</span></label>
+                        </div>
+                    </div>
+
+                    <div class="btn-group">
+                        <button class="btn btn-primary" id="btn-analyze" title="Analyze IOCs">🔍 Analyze</button>
+                        <button class="btn btn-secondary" id="btn-clear-ioc" title="Clear session">↺ Clear</button>
+                    </div>
+                </div>
+
+                <!-- ═══ Simulation Config (Sim Mode) ═══ -->
+                <div class="card" id="config-panel">
+                    <div class="card-header">
+                        <div class="icon cyan">⚙</div>
+                        <h3>Configuration</h3>
+                        <span class="badge badge-cyan" id="status-badge"><span
+                                class="status-dot idle"></span>IDLE</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="attacker-type">Attacker Archetype <small>(hidden from defender)</small></label>
+                        <select id="attacker-type">
+                            <option value="script_kiddie">Script Kiddie — Low skill, noisy</option>
+                            <option value="organized_crime">Organized Crime — Financial motive</option>
+                            <option value="apt_state" selected>APT / State Actor — Stealthy, persistent</option>
+                            <option value="insider_threat">Insider Threat — Authorized abuse</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="detection-coverage">Detection Coverage</label>
+                        <input type="range" id="detection-coverage" min="0" max="100" value="50">
+                        <div class="range-value"><span id="detection-val">50</span>%</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="asset-criticality">Asset Criticality</label>
+                        <select id="asset-criticality">
+                            <option value="0">Low</option>
+                            <option value="1">Medium</option>
+                            <option value="2" selected>High</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="max-steps">Max Timesteps</label>
+                        <input type="number" id="max-steps" min="5" max="50" value="20">
+                    </div>
+
+                    <div class="toggle-row">
+                        <label>RL Agent</label>
+                        <label class="toggle">
+                            <input type="checkbox" id="use-rl" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="toggle-row">
+                        <label>Game Theory</label>
+                        <label class="toggle">
+                            <input type="checkbox" id="use-gt" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="btn-group" style="margin-top: 12px;">
+                        <button class="btn btn-primary" id="btn-run" title="Run full simulation">▶ Run</button>
+                        <button class="btn btn-secondary" id="btn-step" title="Step one timestep">⏭ Step</button>
+                    </div>
+                    <div class="btn-group">
+                        <button class="btn btn-secondary" id="btn-reset" title="Reset simulation">↺ Reset</button>
+                        <button class="btn btn-danger" id="btn-train" title="Train RL agent for 100 episodes">🧠
+                            Train</button>
+                    </div>
+                </div>
+
+                <!-- Belief State -->
+                <div class="card" id="belief-panel">
+                    <div class="card-header">
+                        <div class="icon purple">📊</div>
+                        <h3>Belief State</h3>
+                        <span class="badge badge-cyan" id="entropy-badge">H = 2.00</span>
+                    </div>
+                    <div class="belief-bars" id="belief-bars">
+                        <div class="belief-bar-row">
+                            <span class="belief-bar-label">Script Kiddie</span>
+                            <div class="belief-bar-track">
+                                <div class="belief-bar-fill type-0" style="width: 25%" data-value="25%"></div>
+                            </div>
+                        </div>
+                        <div class="belief-bar-row">
+                            <span class="belief-bar-label">Organized Crime</span>
+                            <div class="belief-bar-track">
+                                <div class="belief-bar-fill type-1" style="width: 25%" data-value="25%"></div>
+                            </div>
+                        </div>
+                        <div class="belief-bar-row">
+                            <span class="belief-bar-label">APT / State</span>
+                            <div class="belief-bar-track">
+                                <div class="belief-bar-fill type-2" style="width: 25%" data-value="25%"></div>
+                            </div>
+                        </div>
+                        <div class="belief-bar-row">
+                            <span class="belief-bar-label">Insider Threat</span>
+                            <div class="belief-bar-track">
+                                <div class="belief-bar-fill type-3" style="width: 25%" data-value="25%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Simulation Log -->
+                <div class="card" id="log-panel">
+                    <div class="card-header">
+                        <div class="icon green">📝</div>
+                        <h3>Event Log</h3>
+                    </div>
+                    <div class="sim-log" id="sim-log">
+                        <div class="log-entry" style="color: var(--text-muted);">Awaiting simulation…</div>
+                    </div>
+                </div>
+
+                <!-- ═══ Enrichment Results (Live Mode) ═══ -->
+                <div class="card" id="enrichment-panel" style="display:none;">
+                    <div class="card-header">
+                        <div class="icon amber">🔎</div>
+                        <h3>Enrichment Results</h3>
+                    </div>
+                    <div id="enrichment-content">
+                        <div class="empty-state">
+                            <div class="icon">📡</div>
+                            <p>Submit IOCs to see enrichment</p>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- ─── Content Area ────────────────────────────────────── -->
+            <div class="content-area">
+                <!-- ═══ Live IOC Metrics (live mode) ═══ -->
+                <div class="metrics-row" id="live-metrics-row" style="display:none;">
+                    <div class="metric-card">
+                        <div class="metric-value cyan" id="lm-iocs">0</div>
+                        <div class="metric-label">IOCs Analyzed</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value red" id="lm-malicious">0</div>
+                        <div class="metric-label">Malicious</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value amber" id="lm-techniques">0</div>
+                        <div class="metric-label">Techniques Mapped</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value purple" id="lm-threat">NONE</div>
+                        <div class="metric-label">Highest Threat</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value green" id="lm-score">0</div>
+                        <div class="metric-label">Avg Threat Score</div>
+                    </div>
+                </div>
+
+                <!-- ═══ IOC Analysis Timeline (live mode) ═══ -->
+                <div class="card panel-full" id="ioc-timeline-panel" style="display:none;">
+                    <div class="card-header">
+                        <div class="icon blue">📋</div>
+                        <h3>IOC Analysis Timeline</h3>
+                        <span class="badge badge-cyan" id="ioc-count-badge">0 IOCs</span>
+                    </div>
+                    <div class="trace-container">
+                        <table class="trace-table" id="ioc-timeline-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>IOC</th>
+                                    <th>Type</th>
+                                    <th>Threat</th>
+                                    <th>Score</th>
+                                    <th>Techniques</th>
+                                    <th>Tactic Stage</th>
+                                    <th>Inferred Type</th>
+                                    <th>Sources</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ioc-timeline-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ═══ Mapped Techniques Panel (live mode) ═══ -->
+                <div class="card panel-full" id="mapped-techniques-panel" style="display:none;">
+                    <div class="card-header">
+                        <div class="icon red">🎯</div>
+                        <h3>Mapped ATT&CK Techniques</h3>
+                    </div>
+                    <div class="predictions-list" id="mapped-techniques-list">
+                        <div class="empty-state">
+                            <div class="icon">🗺</div>
+                            <p>Submit IOCs to map techniques</p>
+                        </div>
+                    </div>
+                </div>
+                <!-- Metrics Row -->
+                <div class="metrics-row" id="metrics-row">
+                    <div class="metric-card">
+                        <div class="metric-value cyan" id="m-detect">—</div>
+                        <div class="metric-label">Detection Rate</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value green" id="m-prevent">—</div>
+                        <div class="metric-label">Prevention Rate</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value amber" id="m-cost">—</div>
+                        <div class="metric-label">Total Cost</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value purple" id="m-utility">—</div>
+                        <div class="metric-label">Defender Utility</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value red" id="m-atk-utility">—</div>
+                        <div class="metric-label">Attacker Utility</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value blue" id="m-ttd">—</div>
+                        <div class="metric-label">Time to Detect</div>
+                    </div>
+                </div>
+
+                <!-- Kill Chain -->
+                <div class="card panel-full" id="killchain-panel">
+                    <div class="card-header">
+                        <div class="icon red">🔗</div>
+                        <h3>MITRE ATT&CK Kill Chain</h3>
+                        <span class="badge badge-amber" id="tactic-badge">Phase: —</span>
+                    </div>
+                    <div class="kill-chain" id="kill-chain"></div>
+                </div>
+
+                <!-- Panels: Predictions + Actions -->
+                <div class="panels-grid">
+                    <div class="card" id="predictions-panel">
+                        <div class="card-header">
+                            <div class="icon amber">🎯</div>
+                            <h3>Next Technique Predictions</h3>
+                        </div>
+                        <div class="predictions-list" id="predictions-list">
+                            <div class="empty-state">
+                                <div class="icon">🔮</div>
+                                <p>Run simulation to see predictions</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card" id="actions-panel">
+                        <div class="card-header">
+                            <div class="icon green">🛡</div>
+                            <h3>Recommended Actions</h3>
+                        </div>
+                        <div class="actions-list" id="actions-list">
+                            <div class="empty-state">
+                                <div class="icon">⚔️</div>
+                                <p>Run simulation to see recommendations</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Game Trace -->
+                <div class="card panel-full" id="trace-panel">
+                    <div class="card-header">
+                        <div class="icon blue">📋</div>
+                        <h3>Game Trace</h3>
+                        <span class="badge badge-cyan" id="step-badge">Step: 0</span>
+                    </div>
+                    <div class="trace-container">
+                        <table class="trace-table" id="trace-table">
+                            <thead>
+                                <tr>
+                                    <th>T</th>
+                                    <th>Tactic</th>
+                                    <th>Technique</th>
+                                    <th>Detected</th>
+                                    <th>Belief Top</th>
+                                    <th>Defender Action</th>
+                                    <th>Prev?</th>
+                                    <th>Def U</th>
+                                    <th>Atk U</th>
+                                    <th>Reward</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trace-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- RL Training + Payoff Heatmap -->
+                <div class="panels-grid">
+                    <div class="card" id="training-panel">
+                        <div class="card-header">
+                            <div class="icon cyan">🧠</div>
+                            <h3>RL Training Progress</h3>
+                        </div>
+                        <div class="training-stats" id="training-stats">
+                            <div class="train-stat">
+                                <div class="train-stat-value" id="ts-episodes">0</div>
+                                <div class="train-stat-label">Episodes</div>
+                            </div>
+                            <div class="train-stat">
+                                <div class="train-stat-value" id="ts-epsilon">0.300</div>
+                                <div class="train-stat-label">Epsilon</div>
+                            </div>
+                            <div class="train-stat">
+                                <div class="train-stat-value" id="ts-reward">0.00</div>
+                                <div class="train-stat-label">Avg Reward</div>
+                            </div>
+                        </div>
+                        <canvas class="chart-canvas" id="training-chart"></canvas>
+                    </div>
+
+                    <div class="card" id="heatmap-panel">
+                        <div class="card-header">
+                            <div class="icon amber">🗺</div>
+                            <h3>Payoff Heatmap</h3>
+                        </div>
+                        <div class="heatmap-container" id="heatmap-container">
+                            <div class="empty-state">
+                                <div class="icon">📊</div>
+                                <p>Run simulation to see payoff matrix</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="js/app.js"></script>
+</body>
+
+</html>

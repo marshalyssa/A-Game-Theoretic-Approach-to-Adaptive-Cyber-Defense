@@ -1,0 +1,140 @@
+
+
+You are an intelligent cybersecurity decision agent designed for adversarial modeling in a MITRE ATT&CK environment.
+
+Your objectives are:
+1. Predict the most likely next adversary technique/tactic given the current sequence of observed techniques and defender responses.
+2. Maintain and update a **belief distribution** over attacker types and goals using Bayesian inference.
+3. Select an optimal defensive action for each timestep based on expected utility, minimizing defender loss and risk.
+4. Balance exploration versus exploitation in policy learning, using reinforcement learning.
+5. Model defender and attacker interactions as a **sequential imperfect information game** with stochastic transitions.
+6. Account for partial observability of attacker intent and incomplete detection coverage.
+
+Your input per timestep includes:
+- Observed events labeled to MITRE ATT&CK techniques
+- Defender actions taken
+- Current belief distribution over attacker strategies
+- Contextual signals like alert severity and asset criticality
+
+Your outputs are:
+- Predicted next technique or tactic probability distribution
+- Suggested defensive strategy with expected utility scores
+- Updated belief state
+
+Constraints:
+- You must reason about uncertainty and incomplete information.
+- You must adapt policy based on observed gameplay histories.
+- You must consider utility trade-offs between detection cost, disruption, and system impact.
+
+Your architecture may combine Bayesian belief updating, reinforcement learning (Q-learning / policy gradient), and game-theoretic reasoning to generate both predictions and strategic decisions.
+```
+
+This **encapsulates both prediction and decision-making**, and can serve as a base prompt for:
+
+* LLM-assisted reasoning
+* RL environment reward specification
+* Policy fine-tuning with SARSA / Q-learning + belief update
+
+---
+
+## 📊 **Key Research Gaps in the Literature**
+
+Based on recent studies combining MITRE ATT&CK, reinforcement learning, and game theory, here are the **gaps your project can meaningfully address**:
+
+---
+
+### 📌 **1. Incomplete Information & Bayesian Strategic Modeling**
+
+Many RL-based MITRE ATT&CK simulations treat environment state fully observed or stateless. They don’t explicitly reason about **attacker intent or type uncertainty**, which is core to real adversary behavior. You must formalize this as a **Bayesian game** with belief updates over attacker types and tactics. ([MDPI][1])
+
+**Opportunity:**
+Innovate by combining **Bayesian inference + sequential game reasoning** rather than purely MDP-based RL.
+
+---
+
+### 📌 **2. Game-Theoretic Utility Functions Are Underdefined**
+
+Existing RL work typically uses reward shaping for neural learning but avoids rigorously defining attacker/defender utilities and payoffs grounded in real SOC business impact. ([MDPI][1])
+
+**Opportunity:**
+Frame utilities with clear economic cost, detection impact, false positives/negatives trade-offs, and multi-objective optimization.
+
+---
+
+### 📌 **3. Multi-Strategy Mixed / Stochastic Games**
+
+Most studies simulate a single attacker or fixed policy class. They don’t explore **mixed strategies** or dynamically evolving attacker behavior in response to defender adaptation. ([MDPI][1])
+
+**Opportunity:**
+Build an agent that **adapts to shifting attacker tactics** using mixed strategies and stochastic game formulations (not fixed RL policies).
+
+---
+
+### 📌 **4. Integration of Real CTI Data is Limited**
+
+Current literature either uses synthetic scenarios or static MITRE ATT&CK mappings but doesn’t incorporate **large scale real CTI technique occurrence data** (e.g., frequency, co-occurrence, campaign patterns). ([Medium][2])
+
+**Opportunity:**
+Use empirical technique co-occurrence and CTI frequency as priors in your belief model to make predictions more reflective of real adversary patterns.
+
+---
+
+### 📌 **5. Network Graph Structure & Non-Linear Progressions**
+
+Many RL simulations treat state transitions linearly or loosely, ignoring the network structure and co-occurrence relationships between techniques. ([arXiv][3])
+
+**Opportunity:**
+Model ATT&CK as a **technique transition graph** informed by real co-occurrence statistics, not a simplistic sequential pipeline.
+
+---
+
+### 📌 **6. Human Behavior & Cognitive Adaptation**
+
+Few models attempt to capture **behavioral strategy changes** (e.g., risk-averse vs aggressive attacker tactics) or defender learning patterns over time. ([arXiv][4])
+
+**Opportunity:**
+Incorporate attacker strategy heterogeneity and cognitive bias into the decision model.
+
+---
+
+### 📌 **7. Evaluation Beyond Accuracy**
+
+Most studies evaluate RL agents using cumulative reward or success rate. They rarely assess **realistic defense effectiveness**, such as true positive/false positive impact, cost of response actions, and longitudinal adaptation. ([MDPI][5])
+
+**Opportunity:**
+Define **practical SOC metrics** like time-to-containment, cost of misclassification, and operational feasibility into experimental evaluation.
+
+---
+
+## 📌 Combined Summary of Gaps
+
+| Area                  | Current Limitation     | Research Opportunity                 |
+| --------------------- | ---------------------- | ------------------------------------ |
+| Incomplete info       | MDP assumed full state | Bayesian attacker type inference     |
+| Utility definitions   | Simple rewards         | Economically grounded payoffs        |
+| Adaptive strategies   | Single fixed policies  | Mixed strategies / stochastic games  |
+| Real data integration | Synthetic scenarios    | CTI & technique co-occurrence priors |
+| Graph structure       | Linear progression     | Technique transition graphs          |
+| Human behavior        | Ignored                | Cognitive adaptation modeling        |
+| Evaluation metrics    | Limited                | Operational SOC performance metrics  |
+
+---
+
+## 📌 How Your Project Fills These Gaps
+
+Your Master’s implementation will be unique because it:
+
+* Uses **Bayesian game theory with belief state inference**
+* Models **multi-strategy attacker adaptation**
+* Integrates **real CTI data for technique transitions**
+* Formalizes game payoffs with **practical cybersecurity cost benefits**
+* Evaluates against **realistic SOC performance metrics**
+
+---
+
+
+[1]: https://www.mdpi.com/2073-4336/15/4/28/html?utm_source=chatgpt.com "A Review of Attacker–Defender Games and Cyber Security"
+[2]: https://medium.com/mitre-engenuity/know-your-adversarys-next-move-with-tie-6eca0e082a31?utm_source=chatgpt.com "Predict adversary activity with machine learning | Center for Threat-Informed Defense"
+[3]: https://arxiv.org/abs/2211.06495?utm_source=chatgpt.com "Investigating co-occurrences of MITRE ATT\\&CK Techniques"
+[4]: https://arxiv.org/abs/2510.20930?utm_source=chatgpt.com "Security Logs to ATT&CK Insights: Leveraging LLMs for High-Level Threat Understanding and Cognitive Trait Inference"
+[5]: https://www.mdpi.com/2079-9292/13/14/2831?utm_source=chatgpt.com "Dynamic Cyberattack Simulation: Integrating Improved Deep Reinforcement Learning with the MITRE-ATT&CK Framework"
