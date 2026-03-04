@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ⚔️ Cybersecurity Decision Agent — MITRE ATT&CK Adversarial Modeling
 
 A game-theoretic cybersecurity decision agent that models attacker-defender interactions within the **MITRE ATT&CK** framework. Combines **Bayesian inference**, **game theory**, and **reinforcement learning** to predict adversary behavior and recommend optimal defensive actions in real time.
@@ -126,3 +127,7 @@ Master's thesis research in cybersecurity / game theory. Combines formal mathema
 ## 📄 License
 
 MIT License — free for academic and research use.
+=======
+# A-Game-Theoretic-Approach-to-Adaptive-Cyber-Defense
+A game-theoretic cybersecurity decision agent that models attacker-defender interactions within the MITRE ATT&amp;CK framework. Combines Bayesian inference, game theory, and reinforcement learning to predict adversary behavior and recommend optimal defensive actions in real time.
+>>>>>>> 4ae31958b78f7102d472ece032527d6d975222b9
