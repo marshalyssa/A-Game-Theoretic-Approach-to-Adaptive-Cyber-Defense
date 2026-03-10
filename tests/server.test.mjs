@@ -80,7 +80,7 @@ describe('POST /api/cti/lookup', () => {
 
         assert.equal(response.status, 400);
         const data = await response.json();
-        assert.ok(data.error.includes('Missing ioc or type'));
+        assert.ok(data.error.includes('Missing type parameter'));
     });
 
     it('returns empty results if no feeds configured (graceful error handling)', async () => {

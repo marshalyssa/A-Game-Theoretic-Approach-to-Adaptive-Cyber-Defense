@@ -11,6 +11,7 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const path = require('path');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,6 +20,25 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
+
+// ─── Rate Limiting ─────────────────────────────────────────────────────────
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // Limit each IP to 100 requests per `window`
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests from this IP' }
+});
+app.use('/api/cti', apiLimiter);
+
+// ─── Input Validation Helper ───────────────────────────────────────────────
+function validateInput(ioc, type, requireType = true) {
+    if (!ioc) return 'Missing ioc parameter';
+    if (requireType && !type) return 'Missing type parameter';
+    if (typeof ioc !== 'string' || ioc.length > 256) return 'Invalid ioc parameter: must be string <= 256 chars';
+    if (type !== undefined && (typeof type !== 'string' || type.length > 32)) return 'Invalid type parameter';
+    return null;
+}
 
 // ─── Health Check ──────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
@@ -36,8 +56,9 @@ app.get('/api/health', (req, res) => {
 app.post('/api/cti/lookup', async (req, res) => {
     const { ioc, type, feeds } = req.body;
 
-    if (!ioc || !type) {
-        return res.status(400).json({ error: 'Missing ioc or type parameter' });
+    const validationError = validateInput(ioc, type);
+    if (validationError) {
+        return res.status(400).json({ error: validationError });
     }
 
     const results = {};
@@ -80,6 +101,8 @@ app.post('/api/cti/lookup', async (req, res) => {
 app.post('/api/cti/otx', async (req, res) => {
     try {
         const { ioc, type } = req.body;
+        const validationError = validateInput(ioc, type);
+        if (validationError) return res.status(400).json({ error: validationError });
         const data = await lookupOTX(ioc, type);
         res.json(data);
     } catch (err) {
@@ -105,18 +128,26 @@ async function lookupOTX(ioc, type) {
 
     for (const section of sections) {
         const url = `https://otx.alienvault.com/api/v1/indicators/${otxType}/${encodeURIComponent(ioc)}/${section}`;
-        const response = await fetch(url, {
-            headers: { 'X-OTX-API-KEY': apiKey, 'Accept': 'application/json' }
-        });
+        try {
+            const response = await fetch(url, {
+                headers: { 'X-OTX-API-KEY': apiKey, 'Accept': 'application/json' },
+                signal: AbortSignal.timeout(8000)
+            });
 
-        if (!response.ok) {
-            if (response.status === 404) {
-                results[section] = null;
-                continue;
+            if (!response.ok) {
+                if (response.status === 404) {
+                    results[section] = null;
+                    continue;
+                }
+                throw new Error(`OTX ${section}: HTTP ${response.status}`);
             }
-            throw new Error(`OTX ${section}: HTTP ${response.status}`);
+            results[section] = await response.json();
+        } catch (e) {
+            if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+                throw new Error(`OTX lookup timed out after 8s`);
+            }
+            throw e;
         }
-        results[section] = await response.json();
     }
 
     // Extract ATT&CK technique IDs from pulse data
@@ -160,6 +191,8 @@ async function lookupOTX(ioc, type) {
 app.post('/api/cti/virustotal', async (req, res) => {
     try {
         const { ioc, type } = req.body;
+        const validationError = validateInput(ioc, type);
+        if (validationError) return res.status(400).json({ error: validationError });
         const data = await lookupVirusTotal(ioc, type);
         res.json(data);
     } catch (err) {
@@ -188,51 +221,58 @@ async function lookupVirusTotal(ioc, type) {
     }
 
     const url = `https://www.virustotal.com/api/v3/${endpoint}/${identifier}`;
-    const response = await fetch(url, {
-        headers: { 'x-apikey': apiKey, 'Accept': 'application/json' }
-    });
+    try {
+        const response = await fetch(url, {
+            headers: { 'x-apikey': apiKey, 'Accept': 'application/json' },
+            signal: AbortSignal.timeout(8000)
+        });
 
-    if (!response.ok) {
-        throw new Error(`VirusTotal: HTTP ${response.status}`);
+        if (!response.ok) {
+            throw new Error(`VirusTotal: HTTP ${response.status}`);
+        }
+
+        const json = await response.json();
+        const attrs = json.data?.attributes || {};
+        const stats = attrs.last_analysis_stats || {};
+
+        // Extract MITRE ATT&CK from sandbox results if file hash
+        let mitreAttack = [];
+        if (endpoint === 'files' && json.data?.id) {
+            try {
+                const mitreUrl = `https://www.virustotal.com/api/v3/files/${json.data.id}/behaviour_mitre_trees`;
+                const mitreResp = await fetch(mitreUrl, {
+                    headers: { 'x-apikey': apiKey, 'Accept': 'application/json' },
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (mitreResp.ok) {
+                    const mitreData = await mitreResp.json();
+                    mitreAttack = parseMitreTree(mitreData);
+                }
+            } catch (e) { /* MITRE data optional, ignore timeouts here */ }
+        }
+
+        return {
+            source: 'virustotal',
+            ioc,
+            type: endpoint,
+            malicious: stats.malicious || 0,
+            suspicious: stats.suspicious || 0,
+            harmless: stats.harmless || 0,
+            undetected: stats.undetected || 0,
+            reputation: attrs.reputation,
+            country: attrs.country || null,
+            asn: attrs.asn || null,
+            asOwner: attrs.as_owner || null,
+            tags: attrs.tags || [],
+            mitreAttack,
+            lastAnalysisDate: attrs.last_analysis_date
+                ? new Date(attrs.last_analysis_date * 1000).toISOString()
+                : null
+        };
+    } catch (e) {
+        if (e.name === 'TimeoutError' || e.name === 'AbortError') throw new Error('VirusTotal API timed out after 8s');
+        throw e;
     }
-
-    const json = await response.json();
-    const attrs = json.data?.attributes || {};
-    const stats = attrs.last_analysis_stats || {};
-
-    // Extract MITRE ATT&CK from sandbox results if file hash
-    let mitreAttack = [];
-    if (endpoint === 'files' && json.data?.id) {
-        try {
-            const mitreUrl = `https://www.virustotal.com/api/v3/files/${json.data.id}/behaviour_mitre_trees`;
-            const mitreResp = await fetch(mitreUrl, {
-                headers: { 'x-apikey': apiKey, 'Accept': 'application/json' }
-            });
-            if (mitreResp.ok) {
-                const mitreData = await mitreResp.json();
-                mitreAttack = parseMitreTree(mitreData);
-            }
-        } catch (e) { /* MITRE data optional */ }
-    }
-
-    return {
-        source: 'virustotal',
-        ioc,
-        type: endpoint,
-        malicious: stats.malicious || 0,
-        suspicious: stats.suspicious || 0,
-        harmless: stats.harmless || 0,
-        undetected: stats.undetected || 0,
-        reputation: attrs.reputation,
-        country: attrs.country || null,
-        asn: attrs.asn || null,
-        asOwner: attrs.as_owner || null,
-        tags: attrs.tags || [],
-        mitreAttack,
-        lastAnalysisDate: attrs.last_analysis_date
-            ? new Date(attrs.last_analysis_date * 1000).toISOString()
-            : null
-    };
 }
 
 function parseMitreTree(data) {
@@ -260,6 +300,8 @@ function parseMitreTree(data) {
 app.post('/api/cti/abuseipdb', async (req, res) => {
     try {
         const { ioc } = req.body;
+        const validationError = validateInput(ioc, undefined, false);
+        if (validationError) return res.status(400).json({ error: validationError });
         const data = await lookupAbuseIPDB(ioc);
         res.json(data);
     } catch (err) {
@@ -272,43 +314,49 @@ async function lookupAbuseIPDB(ioc) {
     if (!apiKey) throw new Error('ABUSEIPDB_API_KEY not configured');
 
     const url = `https://api.abuseipdb.com/api/v2/check?ipAddress=${encodeURIComponent(ioc)}&maxAgeInDays=90&verbose`;
-    const response = await fetch(url, {
-        headers: { 'Key': apiKey, 'Accept': 'application/json' }
-    });
+    try {
+        const response = await fetch(url, {
+            headers: { 'Key': apiKey, 'Accept': 'application/json' },
+            signal: AbortSignal.timeout(8000)
+        });
 
-    if (!response.ok) {
-        throw new Error(`AbuseIPDB: HTTP ${response.status}`);
-    }
+        if (!response.ok) {
+            throw new Error(`AbuseIPDB: HTTP ${response.status}`);
+        }
 
-    const json = await response.json();
-    const d = json.data || {};
+        const json = await response.json();
+        const d = json.data || {};
 
-    // Extract abuse categories from recent reports
-    const categories = new Set();
-    if (d.reports) {
-        for (const report of d.reports.slice(0, 20)) {
-            if (report.categories) {
-                for (const cat of report.categories) {
-                    categories.add(cat);
+        // Extract abuse categories from recent reports
+        const categories = new Set();
+        if (d.reports) {
+            for (const report of d.reports.slice(0, 20)) {
+                if (report.categories) {
+                    for (const cat of report.categories) {
+                        categories.add(cat);
+                    }
                 }
             }
         }
-    }
 
-    return {
-        source: 'abuseipdb',
-        ioc,
-        abuseConfidenceScore: d.abuseConfidenceScore || 0,
-        totalReports: d.totalReports || 0,
-        numDistinctUsers: d.numDistinctUsers || 0,
-        isWhitelisted: d.isWhitelisted || false,
-        isp: d.isp || null,
-        domain: d.domain || null,
-        country: d.countryCode || null,
-        usageType: d.usageType || null,
-        categories: [...categories], // Abuse category IDs
-        lastReportedAt: d.lastReportedAt || null
-    };
+        return {
+            source: 'abuseipdb',
+            ioc,
+            abuseConfidenceScore: d.abuseConfidenceScore || 0,
+            totalReports: d.totalReports || 0,
+            numDistinctUsers: d.numDistinctUsers || 0,
+            isWhitelisted: d.isWhitelisted || false,
+            isp: d.isp || null,
+            domain: d.domain || null,
+            country: d.countryCode || null,
+            usageType: d.usageType || null,
+            categories: [...categories], // Abuse category IDs
+            lastReportedAt: d.lastReportedAt || null
+        };
+    } catch (e) {
+        if (e.name === 'TimeoutError' || e.name === 'AbortError') throw new Error('AbuseIPDB timed out after 8s');
+        throw e;
+    }
 }
 
 // ─── Start Server ──────────────────────────────────────────────────────────
