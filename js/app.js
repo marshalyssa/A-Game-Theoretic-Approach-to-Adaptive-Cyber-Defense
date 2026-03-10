@@ -214,11 +214,17 @@ function bindEvents() {
 
 // ─── Get Config from UI ────────────────────────────────────────────────────
 function getConfig() {
+    const clamp = (val, min, max, def) => {
+        const parsed = parseFloat(val);
+        if (isNaN(parsed)) return def;
+        return Math.min(Math.max(parsed, min), max);
+    };
+
     return {
         attackerType: DOM.attackerType.value,
-        detectionCoverage: parseInt(DOM.detectionCoverage.value) / 100,
-        assetCriticality: parseInt(DOM.assetCriticality.value),
-        maxSteps: parseInt(DOM.maxSteps.value) || 20,
+        detectionCoverage: clamp(DOM.detectionCoverage.value, 0, 100, 50) / 100,
+        assetCriticality: clamp(DOM.assetCriticality.value, 0, 2, 2),
+        maxSteps: clamp(DOM.maxSteps.value, 5, 50, 20),
         useRL: DOM.useRL.checked,
         useGameTheory: DOM.useGT.checked,
         noisyObservation: true,

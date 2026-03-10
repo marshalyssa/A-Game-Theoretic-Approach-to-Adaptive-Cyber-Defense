@@ -129,4 +129,31 @@ describe('POST /api/cti/lookup', () => {
         assert.ok(data.results.virustotal || data.errors.virustotal);
         assert.ok(data.results.abuseipdb || data.errors.abuseipdb);
     });
+
+    it('rejects ioc parameter exceeding 256 characters', async () => {
+        const longIOC = 'a'.repeat(257);
+        const response = await fetch(`${BASE_URL}/api/cti/lookup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ioc: longIOC, type: 'domain' })
+        });
+        assert.equal(response.status, 400);
+        const data = await response.json();
+        assert.ok(data.error.includes('<= 256 chars'));
+    });
+
+    it('enforces rate limits on endpoints (Status 429)', async () => {
+        // Send 105 rapid requests to trigger the 100-request limit
+        const promises = [];
+        for (let i = 0; i < 105; i++) {
+            promises.push(fetch(`${BASE_URL}/api/cti/lookup`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ioc: 'rate.limit.test', type: 'domain', feeds: [] })
+            }));
+        }
+        const responses = await Promise.all(promises);
+        const any429 = responses.some(res => res.status === 429);
+        assert.ok(any429, 'Expected at least one request to hit the 429 Rate Limit');
+    });
 });
