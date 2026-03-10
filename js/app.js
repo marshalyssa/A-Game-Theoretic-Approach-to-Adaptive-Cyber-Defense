@@ -386,11 +386,10 @@ async function runIOCAnalysis() {
                 }
             });
 
-            // Dispatch error toasts for failed backend feeds
-            if (result.enrichment && result.enrichment.errors) {
-                for (const [feed, err] of Object.entries(result.enrichment.errors)) {
-                    window.showError(`${feed.toUpperCase()}: ${err}`);
-                }
+            // Warn user about any feed-level errors (partial failures)
+            const feedErrors = result.enrichment?.errors || {};
+            for (const [feed, errMsg] of Object.entries(feedErrors)) {
+                showError(`${feed.toUpperCase()} feed error: ${errMsg}`, 'warn', 6000);
             }
 
             // Render this IOC's result
@@ -417,6 +416,8 @@ async function runIOCAnalysis() {
 
         setStatus('idle', 'DONE');
     } catch (e) {
+        // Surface the error to the user via toast
+        showError(`Analysis failed: ${e.message}`);
         DOM.enrichmentContent.innerHTML = `
             <div class="empty-state" style="color: var(--accent-red);">
                 <div class="icon">⚠️</div>
@@ -425,7 +426,6 @@ async function runIOCAnalysis() {
             </div>
         `;
         setStatus('idle', 'ERROR');
-        window.showError(`Analysis failed: ${e.message}`);
     }
 
     isRunning = false;
@@ -908,3 +908,39 @@ function formatTypeName(type) {
 
 // ─── Boot ──────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', init);
+
+// ─── Toast Notification System ────────────────────────────────────────────
+const _toastContainer = () => document.getElementById('toast-container');
+
+/**
+ * Show a dismissible toast notification
+ * @param {string} message - Message to display
+ * @param {'error'|'info'|'warn'} type - Visual style (default 'error')
+ * @param {number} duration - Auto-dismiss ms (default 5000)
+ */
+export function showError(message, type = 'error', duration = 5000) {
+    const container = _toastContainer();
+    if (!container) { console.error('[Toast]', message); return; }
+
+    const icons = { error: '⚠️', info: 'ℹ️', warn: '🔔' };
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.innerHTML = `
+        <span class="toast-icon">${icons[type] || '⚠️'}</span>
+        <span class="toast-content">${message}</span>
+    `;
+
+    container.appendChild(toast);
+
+    // Auto-dismiss after duration
+    const dismiss = () => {
+        toast.classList.add('hiding');
+        toast.addEventListener('animationend', () => toast.remove(), { once: true });
+    };
+    setTimeout(dismiss, duration);
+    toast.addEventListener('click', dismiss);
+}
+
+export function showInfo(message) {
+    showError(message, 'info', 4000);
+}
