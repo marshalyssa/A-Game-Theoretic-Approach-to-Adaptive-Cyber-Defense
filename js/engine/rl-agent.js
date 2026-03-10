@@ -48,11 +48,11 @@ function stateToKey(tacticPhase, beliefBucket, severity, criticality, lastAction
  * @returns {Object} agent with Q-table and methods
  */
 export function createAgent(config = {}) {
-    const alpha = config.alpha || 0.1;             // Learning rate
-    const gamma = config.gamma || 0.95;            // Discount factor
-    const epsilon = config.epsilon || 0.3;         // Initial exploration rate
-    const epsilonDecay = config.epsilonDecay || 0.995; // Per-episode decay
-    const epsilonMin = config.epsilonMin || 0.01;  // Minimum exploration
+    const alpha = config.alpha ?? 0.1;             // Learning rate
+    const gamma = config.gamma ?? 0.95;            // Discount factor
+    const epsilon = config.epsilon ?? 0.3;         // Initial exploration rate
+    const epsilonDecay = config.epsilonDecay ?? 0.995; // Per-episode decay
+    const epsilonMin = config.epsilonMin ?? 0.01;  // Minimum exploration
 
     return {
         qTable: {},           // state_key → action_index → Q-value

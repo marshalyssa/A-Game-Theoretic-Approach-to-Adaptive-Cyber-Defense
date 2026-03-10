@@ -1,17 +1,18 @@
 # STATE.md — Project Memory
 
 ## Last Session Summary
-Phase 1 planning complete (2026-03-10).
-- 3 plans created across 2 execution waves
-- Plan 1.1: Test setup + Bayesian/Game engine tests (wave 1)
-- Plan 1.2: RL agent + Simulation integration tests (wave 1)
-- Plan 1.3: CTI mapper + Server tests + verification (wave 2)
-- Target: ≥40 tests using Node.js native test runner (node:test)
+Phase 1 execution in progress (2026-03-10).
+- Wave 1 testing completely finished.
+- Plan 1.1 (Bayesian/Game engines) complete. Tests passing natively.
+- Plan 1.2 (RL agent/Simulation integration) complete. Fixed `rl-agent.js` config bug. Tests passing natively.
+- Total executed tests: 54.
 
 ## Current Position
 - **Phase**: 1 (Testing & Quality Assurance)
-- **Task**: Planning complete
-- **Status**: Ready for execution
+- **Task**: Executing Plan 1.3 (CTI Layer + Server)
+- **Status**: Starting Wave 2
 
 ## Next Steps
-1. /execute 1
+1. Write `cti-manager.test.mjs`
+2. Write `server.test.mjs`
+3. Execute final verification
