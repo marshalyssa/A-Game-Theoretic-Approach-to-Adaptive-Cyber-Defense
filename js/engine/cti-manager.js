@@ -6,7 +6,7 @@
  */
 
 // ─── API Base URL ──────────────────────────────────────────────────────────
-const API_BASE = window.location.origin;
+const API_BASE = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
 
 /**
  * Check which CTI feeds are configured on the server
