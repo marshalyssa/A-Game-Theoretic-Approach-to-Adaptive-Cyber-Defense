@@ -115,6 +115,23 @@ function init() {
     switchTab('simulation'); // Default to simulation mode
 }
 
+// ─── Toast Notifications ───────────────────────────────────────────────────
+window.showError = function (msg) {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+    const toast = document.createElement('div');
+    toast.className = 'toast';
+    toast.innerHTML = `
+        <div class="toast-icon">⚠️</div>
+        <div class="toast-content">${msg}</div>
+    `;
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.classList.add('hiding');
+        setTimeout(() => toast.remove(), 300);
+    }, 6000);
+};
+
 // ─── Tab Switching ─────────────────────────────────────────────────────────
 function switchTab(mode) {
     currentMode = mode;
@@ -363,6 +380,13 @@ async function runIOCAnalysis() {
                 }
             });
 
+            // Dispatch error toasts for failed backend feeds
+            if (result.enrichment && result.enrichment.errors) {
+                for (const [feed, err] of Object.entries(result.enrichment.errors)) {
+                    window.showError(`${feed.toUpperCase()}: ${err}`);
+                }
+            }
+
             // Render this IOC's result
             renderIOCResult(result, i + 1);
             renderLiveMetrics();
@@ -395,6 +419,7 @@ async function runIOCAnalysis() {
             </div>
         `;
         setStatus('idle', 'ERROR');
+        window.showError(`Analysis failed: ${e.message}`);
     }
 
     isRunning = false;
