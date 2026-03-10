@@ -104,7 +104,6 @@ h4 {
     line-height: 1.2;
     color: var(--text-primary);
 }
-}
 
 .mono {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
@@ -157,15 +156,29 @@ h4 {
     background: var(--bg-card);
     border: 1px solid var(--border-primary);
     border-radius: var(--radius-lg);
-    padding: 20px;
+    padding: 24px;
     box-shadow: var(--shadow-card);
-    backdrop-filter: blur(12px);
-    transition: border-color var(--transition-med), box-shadow var(--transition-med);
+    backdrop-filter: blur(16px);
+    transition: transform var(--transition-med), border-color var(--transition-med), box-shadow var(--transition-med);
+    position: relative;
+    overflow: hidden;
+}
+
+.card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.2), transparent);
+    pointer-events: none;
 }
 
 .card:hover {
     border-color: var(--border-hover);
     box-shadow: var(--shadow-card), var(--shadow-glow-cyan);
+    transform: translateY(-2px);
 }
 
 .card-header {
@@ -415,12 +428,15 @@ input[type="range"]::-webkit-slider-thumb {
     border-radius: var(--radius-md);
     padding: 16px;
     text-align: center;
+    backdrop-filter: blur(10px);
     transition: all var(--transition-med);
+    box-shadow: var(--shadow-card);
 }
 
 .metric-card:hover {
     border-color: var(--border-hover);
-    transform: translateY(-2px);
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-card), var(--shadow-glow-cyan);
 }
 
 .metric-value {
@@ -466,60 +482,80 @@ input[type="range"]::-webkit-slider-thumb {
 /* ── Kill Chain ────────────────────────────────────────────────────────── */
 .kill-chain {
     display: flex;
-    gap: 3px;
+    gap: 8px;
     overflow-x: auto;
-    padding: 4px 0;
+    padding: 10px 4px;
+    scrollbar-width: none;
+    /* Hide scrollbar for clean look */
+}
+
+.kill-chain::-webkit-scrollbar {
+    display: none;
 }
 
 .kill-chain-stage {
     flex: 0 0 auto;
-    min-width: 70px;
-    padding: 8px 6px;
-    border-radius: var(--radius-sm);
+    min-width: 85px;
+    padding: 10px 8px;
+    border-radius: var(--radius-md);
     text-align: center;
-    font-size: 0.62rem;
-    font-weight: 600;
+    font-size: 0.65rem;
+    font-family: 'Outfit', sans-serif;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.03em;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid transparent;
+    letter-spacing: 0.05em;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.05);
     transition: all var(--transition-fast);
     position: relative;
     color: var(--text-muted);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
 }
 
 .kill-chain-stage.active {
-    background: rgba(56, 189, 248, 0.12);
+    background: rgba(34, 211, 238, 0.1);
     border-color: var(--accent-cyan);
     color: var(--accent-cyan);
     box-shadow: var(--shadow-glow-cyan);
+    transform: scale(1.05);
+    z-index: 2;
 }
 
 .kill-chain-stage.visited {
-    background: rgba(52, 211, 153, 0.1);
-    border-color: rgba(52, 211, 153, 0.3);
+    background: rgba(52, 211, 153, 0.08);
+    border-color: rgba(52, 211, 153, 0.2);
     color: var(--accent-green);
 }
 
 .kill-chain-stage.detected {
-    background: rgba(248, 113, 113, 0.1);
-    border-color: rgba(248, 113, 113, 0.3);
+    background: rgba(239, 68, 68, 0.08);
+    border-color: rgba(239, 68, 68, 0.2);
     color: var(--accent-red);
 }
 
 .kill-chain-stage::after {
-    content: '→';
+    content: '';
     position: absolute;
-    right: -8px;
+    right: -10px;
     top: 50%;
-    transform: translateY(-50%);
-    color: var(--text-muted);
-    font-size: 0.6rem;
-    z-index: 1;
+    width: 12px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.1);
+    z-index: 0;
+}
+
+.kill-chain-stage.active::after,
+.kill-chain-stage.visited::after {
+    background: var(--accent-cyan);
+    opacity: 0.3;
 }
 
 .kill-chain-stage:last-child::after {
-    content: '';
+    display: none;
 }
 
 /* ── Belief Chart ──────────────────────────────────────────────────────── */
