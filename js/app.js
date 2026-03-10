@@ -143,11 +143,19 @@ function switchTab(mode) {
     // Show/hide panels
     for (const id of SIM_PANELS) {
         const el = document.getElementById(id);
-        if (el) el.style.display = mode === 'simulation' ? '' : 'none';
+        if (el) {
+            el.style.display = mode === 'simulation' ? '' : 'none';
+            if (mode === 'simulation') el.classList.add('fade-in');
+            else el.classList.remove('fade-in');
+        }
     }
     for (const id of LIVE_PANELS) {
         const el = document.getElementById(id);
-        if (el) el.style.display = mode === 'live' ? '' : 'none';
+        if (el) {
+            el.style.display = mode === 'live' ? '' : 'none';
+            if (mode === 'live') el.classList.add('fade-in');
+            else el.classList.remove('fade-in');
+        }
     }
 
     // If switching to live mode, check feed status
