@@ -21,6 +21,108 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
+// ─── Database Manager ──────────────────────────────────────────────────────
+const db = require('./js/engine/db-manager.cjs');
+db.initDB();
+
+// ─── Simulation Persistence ────────────────────────────────────────────────
+app.post('/api/sim/save', (req, res) => {
+    try {
+        const simId = db.saveSimulation(req.body);
+        res.json({ success: true, simId });
+    } catch (err) {
+        console.error('DB Error:', err);
+        res.status(500).json({ error: 'Failed to save simulation' });
+    }
+});
+
+app.get('/api/sim/recent', (req, res) => {
+    try {
+        const results = db.getRecentSimulations(req.query.limit || 20);
+        res.json(results);
+    } catch (err) {
+        console.error('DB Error:', err);
+        res.status(500).json({ error: 'Failed to fetch results' });
+    }
+});
+
+// ─── IOC Analysis Persistence ──────────────────────────────────────────────
+app.post('/api/ioc/save', (req, res) => {
+    try {
+        const rowId = db.saveIOCAnalysis(req.body);
+        res.json({ success: true, id: rowId });
+    } catch (err) {
+        console.error('IOC DB Error:', err);
+        res.status(500).json({ error: 'Failed to save IOC analysis' });
+    }
+});
+
+app.get('/api/ioc/history', (req, res) => {
+    try {
+        const results = db.getIOCHistory(parseInt(req.query.limit) || 50);
+        res.json(results);
+    } catch (err) {
+        console.error('IOC DB Error:', err);
+        res.status(500).json({ error: 'Failed to fetch IOC history' });
+    }
+});
+
+app.get('/api/ioc/stats', (req, res) => {
+    try {
+        const stats = db.getIOCStats();
+        res.json(stats);
+    } catch (err) {
+        console.error('IOC DB Error:', err);
+        res.status(500).json({ error: 'Failed to fetch IOC stats' });
+    }
+});
+
+// ─── RL Experience Replay ──────────────────────────────────────────────────
+app.post('/api/ioc/rl-experience', (req, res) => {
+    try {
+        db.saveRLExperience(req.body);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('RL DB Error:', err);
+        res.status(500).json({ error: 'Failed to save RL experience' });
+    }
+});
+
+app.get('/api/ioc/rl-experiences', (req, res) => {
+    try {
+        const exps = db.getRLExperiences(parseInt(req.query.limit) || 500);
+        res.json({ count: exps.length, experiences: exps });
+    } catch (err) {
+        console.error('RL DB Error:', err);
+        res.status(500).json({ error: 'Failed to fetch RL experiences' });
+    }
+});
+
+app.post('/api/ioc/rl-replay', (req, res) => {
+    try {
+        const exps = db.getRLExperiences(parseInt(req.body.limit) || 500);
+        if (exps.length === 0) {
+            return res.json({ success: false, message: 'No experiences stored yet', trained: 0 });
+        }
+        // Return experiences for client-side RL replay
+        // The client will apply these to its own Q-table
+        res.json({
+            success: true,
+            trained: exps.length,
+            experiences: exps.map(e => ({
+                stateKey: e.state_key,
+                actionIdx: e.action_idx,
+                reward: e.reward,
+                nextStateKey: e.next_state_key,
+                done: !!e.done
+            }))
+        });
+    } catch (err) {
+        console.error('RL Replay Error:', err);
+        res.status(500).json({ error: 'Failed to run RL replay' });
+    }
+});
+
 // ─── Rate Limiting ─────────────────────────────────────────────────────────
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
@@ -125,29 +227,50 @@ async function lookupOTX(ioc, type) {
     const otxType = otxTypeMap[type.toLowerCase()] || 'IPv4';
     const sections = ['general', 'reputation'];
     const results = {};
+    const sectionErrors = [];
 
     for (const section of sections) {
         const url = `https://otx.alienvault.com/api/v1/indicators/${otxType}/${encodeURIComponent(ioc)}/${section}`;
-        try {
-            const response = await fetch(url, {
-                headers: { 'X-OTX-API-KEY': apiKey, 'Accept': 'application/json' },
-                signal: AbortSignal.timeout(8000)
-            });
+        let attempts = 0;
+        const maxAttempts = 3;
+        let success = false;
 
-            if (!response.ok) {
-                if (response.status === 404) {
+        while (attempts < maxAttempts && !success) {
+            attempts++;
+            try {
+                const response = await fetch(url, {
+                    headers: { 'X-OTX-API-KEY': apiKey, 'Accept': 'application/json' },
+                    signal: AbortSignal.timeout(15000)
+                });
+
+                if (response.ok) {
+                    results[section] = await response.json();
+                    success = true;
+                } else if (response.status === 404) {
                     results[section] = null;
+                    success = true;
+                } else if (response.status >= 500 && attempts < maxAttempts) {
+                    // Retry on server errors
+                    await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
+                    continue;
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            } catch (e) {
+                const isTimeout = e.name === 'TimeoutError' || e.name === 'AbortError';
+                if (isTimeout && attempts < maxAttempts) {
+                    console.warn(`OTX ${section} timeout (attempt ${attempts}), retrying…`);
                     continue;
                 }
-                throw new Error(`OTX ${section}: HTTP ${response.status}`);
+                sectionErrors.push(`${section}: ${e.message}`);
+                break;
             }
-            results[section] = await response.json();
-        } catch (e) {
-            if (e.name === 'TimeoutError' || e.name === 'AbortError') {
-                throw new Error(`OTX lookup timed out after 8s`);
-            }
-            throw e;
         }
+    }
+
+    // If both sections failed, throw consolidated error
+    if (Object.keys(results).length === 0 && sectionErrors.length > 0) {
+        throw new Error(`OTX lookup failed: ${sectionErrors.join(', ')}`);
     }
 
     // Extract ATT&CK technique IDs from pulse data

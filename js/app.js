@@ -60,6 +60,8 @@ const DOM = {
     mUtility: $('m-utility'),
     mAtkUtility: $('m-atk-utility'),
     mTTD: $('m-ttd'),
+    mLogLoss: $('m-logloss'),
+    mHitRate: $('m-hitrate'),
     // Training stats
     tsEpisodes: $('ts-episodes'),
     tsEpsilon: $('ts-epsilon'),
@@ -82,6 +84,9 @@ const DOM = {
     feedAbuse: $('feed-abuse'),
     btnAnalyze: $('btn-analyze'),
     btnClearIOC: $('btn-clear-ioc'),
+    btnIOCHistory: $('btn-ioc-history'),
+    btnTrainIOC: $('btn-train-ioc'),
+    dbStatsBadge: $('db-stats-badge'),
     feedStatusBadge: $('feed-status-badge'),
     enrichmentPanel: $('enrichment-panel'),
     enrichmentContent: $('enrichment-content'),
@@ -161,6 +166,7 @@ function switchTab(mode) {
     // If switching to live mode, check feed status
     if (mode === 'live') {
         checkFeeds();
+        refreshDBStats();
         if (!liveSession) {
             initLiveSession();
         }
@@ -218,6 +224,10 @@ function bindEvents() {
     // IOC controls
     DOM.btnAnalyze.addEventListener('click', runIOCAnalysis);
     DOM.btnClearIOC.addEventListener('click', clearLiveSession);
+
+    // IOC Database controls
+    if (DOM.btnIOCHistory) DOM.btnIOCHistory.addEventListener('click', showIOCHistory);
+    if (DOM.btnTrainIOC) DOM.btnTrainIOC.addEventListener('click', trainFromIOCs);
 }
 
 // ─── Get Config from UI ────────────────────────────────────────────────────
@@ -270,10 +280,42 @@ async function runFullSimulation() {
 
     if (simState.metrics) renderMetrics(simState.metrics);
     renderPayoffHeatmap(simState);
+
+    // Persist simulation result or show accuracy info
+    if (simState.metrics) {
+        saveSimulationResult(simState);
+    }
+
     log('■ Simulation complete', 'log-action');
     setStatus('idle', 'DONE');
     isRunning = false;
     disableControls(false);
+}
+
+/**
+ * Persist simulation results to the database
+ */
+async function saveSimulationResult(state) {
+    try {
+        const report = {
+            config: state.config,
+            metrics: state.metrics,
+            history: state.history
+        };
+
+        const resp = await fetch('/api/sim/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(report)
+        });
+
+        const data = await resp.json();
+        if (data.success) {
+            log(`✓ Result archived: ${data.simId}`, 'log-info');
+        }
+    } catch (err) {
+        console.warn('Failed to persist simulation:', err);
+    }
 }
 
 function stepOnce() {
@@ -456,6 +498,120 @@ function clearLiveSession() {
     DOM.lmThreat.textContent = 'NONE';
     DOM.lmScore.textContent = '0';
     setStatus('idle', 'CLEARED');
+}
+
+// ─── IOC Database Features ─────────────────────────────────────────────────
+async function refreshDBStats() {
+    try {
+        const resp = await fetch('/api/ioc/stats');
+        const stats = await resp.json();
+        if (DOM.dbStatsBadge) {
+            DOM.dbStatsBadge.textContent = `DB: ${stats.totalIOCs} IOCs`;
+        }
+    } catch (e) {
+        if (DOM.dbStatsBadge) DOM.dbStatsBadge.textContent = 'DB: offline';
+    }
+}
+
+async function showIOCHistory() {
+    try {
+        DOM.enrichmentContent.innerHTML = `
+            <div style="text-align:center; padding: 20px;">
+                <div style="color: var(--accent-cyan); margin-bottom: 8px;">📊 Loading IOC History…</div>
+                <div class="progress-bar"><div class="progress-bar-fill" style="width:50%"></div></div>
+            </div>
+        `;
+
+        const resp = await fetch('/api/ioc/history?limit=30');
+        const history = await resp.json();
+
+        if (!history || history.length === 0) {
+            DOM.enrichmentContent.innerHTML = '<div class="empty-state"><div class="icon">📊</div><p>No IOC history in database yet. Analyze some IOCs first!</p></div>';
+            return;
+        }
+
+        let html = '<div style="font-size:0.78rem; color:var(--text-secondary); margin-bottom:8px; text-transform:uppercase; letter-spacing:0.05em; font-weight:600;">Recent IOC Analyses (from database)</div>';
+        html += '<div style="max-height:400px; overflow-y:auto;">';
+
+        for (const row of history) {
+            const threatClass = `threat-${row.threat_level || 'NONE'}`;
+            const techs = (() => { try { return JSON.parse(row.techniques_json || '[]'); } catch { return []; } })();
+            html += `
+                <div class="enrichment-feed" style="margin-bottom:8px; padding:8px; border-left:3px solid var(--border-primary);">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:var(--text-primary); font-size:0.85rem;">${row.ioc}</strong>
+                        <span class="threat-badge ${threatClass}">${row.threat_level || 'NONE'}</span>
+                    </div>
+                    <div style="color:var(--text-muted); font-size:0.72rem; margin-top:4px;">
+                        Type: ${row.type} · Score: ${row.threat_score} · Entropy: ${(row.belief_entropy || 0).toFixed(2)}
+                        ${techs.length > 0 ? ` · Techniques: ${techs.join(', ')}` : ''}
+                        <br>Predicted: ${row.most_probable_type || '—'} · Action: ${row.defender_action || '—'}
+                        <br><span style="color:var(--text-muted);">${row.timestamp}</span>
+                    </div>
+                </div>
+            `;
+        }
+        html += '</div>';
+
+        DOM.enrichmentContent.innerHTML = html;
+    } catch (e) {
+        showError('Failed to load IOC history: ' + e.message);
+    }
+}
+
+async function trainFromIOCs() {
+    if (isRunning) return;
+    isRunning = true;
+    setStatus('running', 'RL REPLAY');
+
+    try {
+        const resp = await fetch('/api/ioc/rl-replay', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ limit: 500 })
+        });
+        const data = await resp.json();
+
+        if (!data.success || !data.experiences || data.experiences.length === 0) {
+            showError('No RL experiences stored yet. Analyze IOCs first to generate training data.');
+            setStatus('idle', 'NO DATA');
+            isRunning = false;
+            return;
+        }
+
+        // Replay experiences into the RL agent's Q-table
+        const { updateQValue } = await import('./engine/rl-agent.js');
+        let replayed = 0;
+        for (const exp of data.experiences) {
+            updateQValue(rlAgent, exp.stateKey, exp.actionIdx, exp.reward, exp.nextStateKey);
+            replayed++;
+        }
+
+        const stats = getAgentStats(rlAgent);
+        log(`🧠 RL Replay: ${replayed} IOC experiences applied to Q-table`, 'log-action');
+        log(`  Q-states: ${stats.qTableStates} · Avg reward: ${stats.avgReward}`, '');
+
+        // Update training UI
+        DOM.tsEpisodes.textContent = stats.episodes;
+        DOM.tsEpsilon.textContent = stats.currentEpsilon.toFixed(3);
+        DOM.tsReward.textContent = stats.recentAvgReward.toFixed(1);
+
+        setStatus('idle', 'TRAINED');
+        showError = window.showError; // ensure reference
+        const container = document.getElementById('toast-container');
+        if (container) {
+            const toast = document.createElement('div');
+            toast.className = 'toast info';
+            toast.innerHTML = `<div class="toast-icon">🧠</div><div class="toast-content">Trained from ${replayed} IOC experiences</div>`;
+            container.appendChild(toast);
+            setTimeout(() => { toast.classList.add('hiding'); setTimeout(() => toast.remove(), 300); }, 4000);
+        }
+    } catch (e) {
+        showError('RL replay failed: ' + e.message);
+        setStatus('idle', 'ERROR');
+    }
+
+    isRunning = false;
 }
 
 // ─── Render IOC Result ─────────────────────────────────────────────────────
@@ -778,11 +934,14 @@ function renderMetrics(metrics) {
     DOM.mUtility.textContent = metrics.cumulativeDefenderUtility.toFixed(1);
     DOM.mAtkUtility.textContent = metrics.cumulativeAttackerUtility.toFixed(1);
     DOM.mTTD.textContent = metrics.timeToDetection >= 0 ? `T${metrics.timeToDetection}` : 'N/A';
+    DOM.mLogLoss.textContent = metrics.logLoss ? metrics.logLoss.toFixed(2) : '—';
+    DOM.mHitRate.textContent = metrics.top3HitRate ? `${Math.round(metrics.top3HitRate * 100)}%` : '—';
 }
 
 function resetMetrics() {
     DOM.mDetect.textContent = '—'; DOM.mPrevent.textContent = '—'; DOM.mCost.textContent = '—';
     DOM.mUtility.textContent = '—'; DOM.mAtkUtility.textContent = '—'; DOM.mTTD.textContent = '—';
+    DOM.mLogLoss.textContent = '—'; DOM.mHitRate.textContent = '—';
 }
 
 function updateTrainingUI(stats) {

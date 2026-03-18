@@ -63,6 +63,13 @@
                         <button class="btn btn-primary" id="btn-analyze" title="Analyze IOCs">🔍 Analyze</button>
                         <button class="btn btn-secondary" id="btn-clear-ioc" title="Clear session">↺ Clear</button>
                     </div>
+                    <div class="btn-group" style="margin-top: 4px;">
+                        <button class="btn btn-secondary" id="btn-ioc-history" title="View IOC analysis history from database">📊 IOC History</button>
+                        <button class="btn btn-danger" id="btn-train-ioc" title="Train RL agent from stored IOC experiences">🧠 Train from IOCs</button>
+                    </div>
+                    <div style="text-align: center; margin-top: 6px;">
+                        <span class="badge badge-cyan" id="db-stats-badge" style="font-size: 0.68rem;">DB: — IOCs</span>
+                    </div>
                 </div>
 
                 <!-- ═══ Simulation Config (Sim Mode) ═══ -->
@@ -283,6 +290,14 @@
                     <div class="metric-card">
                         <div class="metric-value blue" id="m-ttd">—</div>
                         <div class="metric-label">Time to Detect</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value amber" id="m-logloss">—</div>
+                        <div class="metric-label">Pred. Log Loss</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value cyan" id="m-hitrate">—</div>
+                        <div class="metric-label">Top-3 Hit Rate</div>
                     </div>
                 </div>
 

@@ -178,6 +178,35 @@ export function updateAgent(agent, state, actionIdx, reward, nextState, done = f
 }
 
 /**
+ * Direct Q-value update using pre-computed state keys (for experience replay)
+ * Q(s,a) ← Q(s,a) + α[r + γ max_a' Q(s',a') - Q(s,a)]
+ * 
+ * @param {Object} agent - RL agent
+ * @param {string} stateKey - Pre-computed state key
+ * @param {number} actionIdx - Action index taken
+ * @param {number} reward - Reward received
+ * @param {string} nextStateKey - Pre-computed next state key
+ * @param {boolean} done - Whether episode ended
+ */
+export function updateQValue(agent, stateKey, actionIdx, reward, nextStateKey, done = false) {
+    const qValues = getQValues(agent, stateKey);
+    const currentQ = qValues[actionIdx] || 0;
+
+    let maxNextQ = 0;
+    if (!done && nextStateKey) {
+        const nextQValues = getQValues(agent, nextStateKey);
+        maxNextQ = Math.max(...nextQValues);
+    }
+
+    const tdTarget = reward + agent.gamma * maxNextQ;
+    const tdError = tdTarget - currentQ;
+    qValues[actionIdx] = currentQ + agent.alpha * tdError;
+
+    agent.stepCount++;
+    agent.totalReward += reward;
+}
+
+/**
  * Decay exploration rate at the end of an episode
  */
 export function decayEpsilon(agent) {

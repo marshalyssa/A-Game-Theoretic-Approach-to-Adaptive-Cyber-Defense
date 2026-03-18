@@ -21,6 +21,7 @@ import { rankDefenderActions } from './game-engine.js';
  */
 export function createLiveSession() {
     return {
+        sessionId: `live_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         iocs: [],               // All submitted IOCs with enrichment
         belief: createBeliefState(),
         observedTechniques: [],  // All ATT&CK techniques mapped from IOCs
@@ -149,6 +150,61 @@ export async function analyzeIOC(session, ioc, type = null, feeds = ['otx', 'vir
     }
 
     if (progressCallback) progressCallback('complete', 'Analysis complete');
+
+    // ─── Step 9: Persist to Database ───────────────────────────────────────
+    try {
+        const persistPayload = {
+            sessionId: session.sessionId,
+            ioc,
+            type: iocType,
+            threat,
+            tacticStage,
+            mostProbableType: getMostProbableType(session.belief),
+            beliefEntropy: getBeliefEntropy(session.belief),
+            mappedTechniques,
+            enrichment,
+            feedsUsed: feeds,
+            topAction: recommendations.length > 0 ? recommendations[0].name : ''
+        };
+        fetch('/api/ioc/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(persistPayload)
+        }).catch(() => {}); // fire-and-forget
+
+        // ─── Step 10: Generate RL Experience Tuple ─────────────────────────
+        if (recommendations.length > 0 && techniqueIds.length > 0) {
+            const beliefBucket = Math.round(getBeliefEntropy(session.belief) * 10);
+            const phase = tacticStage.phase || 0;
+            const severity = threat.score >= 70 ? 2 : threat.score >= 30 ? 1 : 0;
+            const stateKey = `${phase}_${beliefBucket}_${severity}_1_0`;
+
+            // Reward: higher for detecting threats, penalize missed high-risk IOCs
+            const reward = (threat.score / 100) * 2 - 0.5 + (techniqueIds.length * 0.1);
+
+            // Next state: advanced phase or terminal
+            const nextPhase = Math.min(phase + 1, 13);
+            const nextStateKey = `${nextPhase}_${beliefBucket}_${severity}_1_0`;
+
+            const rlExp = {
+                sessionId: session.sessionId,
+                step: session.iocs.length,
+                stateKey,
+                actionIdx: 0, // First recommended action
+                reward: Math.round(reward * 100) / 100,
+                nextStateKey,
+                done: false
+            };
+            fetch('/api/ioc/rl-experience', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(rlExp)
+            }).catch(() => {}); // fire-and-forget
+        }
+    } catch (e) {
+        // Persistence errors should never break analysis
+        console.warn('IOC persistence failed:', e.message);
+    }
 
     return entry;
 }
