@@ -2,6 +2,10 @@
 .env
 .env.local
 .env.*.local
+.env.example
+
+# Prompt/config files with sensitive info
+prompt.txt
 
 # Reports and private documents
 thesis_report.md
