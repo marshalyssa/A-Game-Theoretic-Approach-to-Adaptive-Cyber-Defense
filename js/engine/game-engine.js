@@ -295,3 +295,47 @@ export function rankDefenderActions(predictedTechDist, detectionCoverage = 0.5) 
         disruption: DEFENDER_ACTIONS[actionId].disruption
     })).sort((a, b) => b.expectedUtility - a.expectedUtility);
 }
+
+// ─── MULTI-AGENT EXTENSIONS ──────────────────────────────────────────────────
+
+/**
+ * Computes optimal action allocation across multiple simultaneous threats.
+ * Evaluates the global expected utility for the defender.
+ * 
+ * @param {Array<Object>} attackerBeliefDists - Array of belief distributions over attacker types (one per active attacker)
+ * @param {Array<Object>} attackerExpectedTechs - Array mapping attacker type -> expected technique
+ * @param {number} detectionCoverage - Current detection coverage
+ * @returns {{bestAction: string, expectedUtility: number}}
+ */
+export function bestMultiAgentResponse(attackerBeliefDists, attackerExpectedTechs, detectionCoverage) {
+    let bestGlobalAction = DEFENDER_ACTION_IDS[0];
+    let maxGlobalUtil = -Infinity;
+
+    for (const actionId of DEFENDER_ACTION_IDS) {
+        let globalUtil = 0;
+        
+        // Sum expected utility over all active attackers
+        for (let i = 0; i < attackerBeliefDists.length; i++) {
+            const beliefDist = attackerBeliefDists[i];
+            const techDist = attackerExpectedTechs[i] || {};
+
+            for (const [type, probType] of Object.entries(beliefDist)) {
+                if (probType < 0.01) continue;
+                
+                const expectedTech = techDist[type];
+                if (expectedTech) {
+                    const util = computeDefenderUtility(actionId, expectedTech, detectionCoverage);
+                    // Add marginal util
+                    globalUtil += probType * util;
+                }
+            }
+        }
+        
+        if (globalUtil > maxGlobalUtil) {
+            maxGlobalUtil = globalUtil;
+            bestGlobalAction = actionId;
+        }
+    }
+
+    return { bestAction: bestGlobalAction, expectedUtility: maxGlobalUtil };
+}

@@ -1,9 +1,8 @@
 /**
- * App Controller — UI Wiring, Rendering, and Simulation Control
+ * App Controller — UI Wiring, Rendering, and IOC Analysis Control
  * 
- * Two modes:
- *   1. Simulation — Run synthetic adversarial games with configurable attacker types
- *   2. Live IOC — Submit real IOCs, query CTI feeds, map to ATT&CK, predict next steps
+ * Live IOC Mode: Submit real IOCs, query CTI feeds, map to ATT&CK,
+ * predict next steps, and train RL agents from historical data.
  */
 
 import { TACTICS, TECHNIQUE_BY_ID, TACTIC_PHASES } from './data/mitre-catalog.js';
@@ -11,15 +10,13 @@ import { ATTACKER_PROFILES, ATTACKER_TYPES } from './data/attacker-profiles.js';
 import { DEFENDER_ACTIONS, DEFENDER_ACTION_IDS } from './data/defender-actions.js';
 import { createBeliefState, getBeliefEntropy, getMaxEntropy } from './engine/bayesian-engine.js';
 import { computePayoffMatrix, solveMixedStrategy } from './engine/game-engine.js';
-import { createAgent, getAgentStats, resetAgent } from './engine/rl-agent.js';
-import { createSimConfig, initSimulation, stepSimulation, runEpisode, runTraining, exportSimulationReport } from './engine/simulation.js';
-
+import { createAgent, getAgentStats, resetAgent, trainFromReplayBatch, exportQTable, importQTable } from './engine/rl-agent.js';
+import { createDQNAgent, getDQNAgentStats, trainFromIOCReplay, exportDQNNetwork, importDQNNetwork } from './engine/dqn-agent.js';
 // ─── Global State ──────────────────────────────────────────────────────────
-let simState = null;
 let rlAgent = createAgent();
+let dqnAgent = createDQNAgent();
 let isRunning = false;
-let autoPlayTimer = null;
-let currentMode = 'simulation'; // 'simulation' | 'live'
+let currentMode = 'live'; // 'live' | 'history'
 let liveSession = null;
 
 // ─── DOM References ────────────────────────────────────────────────────────
@@ -27,55 +24,8 @@ const $ = id => document.getElementById(id);
 
 const DOM = {
     // Tabs
-    tabSim: $('tab-sim'),
     tabLive: $('tab-live'),
-    // Sim config
-    attackerType: $('attacker-type'),
-    detectionCoverage: $('detection-coverage'),
-    detectionVal: $('detection-val'),
-    assetCriticality: $('asset-criticality'),
-    maxSteps: $('max-steps'),
-    useRL: $('use-rl'),
-    useGT: $('use-gt'),
-    btnRun: $('btn-run'),
-    btnStep: $('btn-step'),
-    btnReset: $('btn-reset'),
-    btnTrain: $('btn-train'),
-    statusBadge: $('status-badge'),
-    entropyBadge: $('entropy-badge'),
-    tacticBadge: $('tactic-badge'),
-    stepBadge: $('step-badge'),
-    beliefBars: $('belief-bars'),
-    simLog: $('sim-log'),
-    killChain: $('kill-chain'),
-    predictionsList: $('predictions-list'),
-    actionsList: $('actions-list'),
-    traceBody: $('trace-body'),
-    trainingChart: $('training-chart'),
-    heatmapContainer: $('heatmap-container'),
-    // Sim metrics
-    mDetect: $('m-detect'),
-    mPrevent: $('m-prevent'),
-    mCost: $('m-cost'),
-    mUtility: $('m-utility'),
-    mAtkUtility: $('m-atk-utility'),
-    mTTD: $('m-ttd'),
-    mLogLoss: $('m-logloss'),
-    mHitRate: $('m-hitrate'),
-    // Training stats
-    tsEpisodes: $('ts-episodes'),
-    tsEpsilon: $('ts-epsilon'),
-    tsReward: $('ts-reward'),
-    // Panels
-    configPanel: $('config-panel'),
-    logPanel: $('log-panel'),
-    metricsRow: $('metrics-row'),
-    killchainPanel: $('killchain-panel'),
-    predictionsPanel: $('predictions-panel'),
-    actionsPanel: $('actions-panel'),
-    tracePanel: $('trace-panel'),
-    trainingPanel: $('training-panel'),
-    heatmapPanel: $('heatmap-panel'),
+    tabHistory: $('tab-history'),
     // IOC panels
     iocPanel: $('ioc-panel'),
     iocInput: $('ioc-input'),
@@ -90,34 +40,58 @@ const DOM = {
     feedStatusBadge: $('feed-status-badge'),
     enrichmentPanel: $('enrichment-panel'),
     enrichmentContent: $('enrichment-content'),
+    // Live metrics
     liveMetricsRow: $('live-metrics-row'),
     lmIOCs: $('lm-iocs'),
     lmMalicious: $('lm-malicious'),
     lmTechniques: $('lm-techniques'),
     lmThreat: $('lm-threat'),
     lmScore: $('lm-score'),
+    // Timeline & techniques
     iocTimelinePanel: $('ioc-timeline-panel'),
     iocTimelineBody: $('ioc-timeline-body'),
     iocCountBadge: $('ioc-count-badge'),
     mappedTechniquesPanel: $('mapped-techniques-panel'),
     mappedTechniquesList: $('mapped-techniques-list'),
+    predictionsPanel: $('predictions-panel'),
+    predictionsList: $('predictions-list'),
+    actionsPanel: $('actions-panel'),
+    actionsList: $('actions-list'),
+    // RL Training panel
+    rlTrainingPanel: $('rl-training-panel'),
+    rlExpCount: $('rl-exp-count'),
+    btnTrainQL: $('btn-train-ql'),
+    btnTrainDQN: $('btn-train-dqn'),
+    rlTrainOutput: $('rl-train-output'),
+    rlStatsGrid: $('rl-stats-grid'),
+    // History metrics
+    hmTotalIocs: $('hm-total-iocs'),
+    hmMaliciousIocs: $('hm-malicious-iocs'),
+    hmAvgScore: $('hm-avg-score'),
+    
+    // Feed analytics containers
+    vtHistoryChart: $('vt-history-chart'),
+    abuseHistoryChart: $('abuse-history-chart'),
+    otxHistoryChart: $('otx-history-chart'),
+
+    // History 
+    historyTabContent: $('history-tab-content'),
+    historyIocTbody: $('history-ioc-tbody'),
+    historyIocSearch: $('ioc-history-search')
 };
 
-// Sim-only panels
-const SIM_PANELS = ['config-panel', 'log-panel', 'metrics-row', 'predictions-panel', 'actions-panel', 'trace-panel', 'training-panel', 'heatmap-panel'];
+let lastFetchedHistory = [];
+
 // Live-only panels
-const LIVE_PANELS = ['ioc-panel', 'enrichment-panel', 'live-metrics-row', 'ioc-timeline-panel', 'mapped-techniques-panel'];
+const LIVE_PANELS = ['ioc-panel', 'enrichment-panel', 'live-metrics-row', 'ioc-timeline-panel', 'mapped-techniques-panel', 'predictions-panel', 'actions-panel', 'rl-training-panel'];
 // Shared panels
 const SHARED_PANELS = ['killchain-panel', 'belief-panel'];
 
 // ─── Initialize ────────────────────────────────────────────────────────────
 function init() {
-    buildKillChain();
     bindEvents();
-    updateBeliefUI(createBeliefState());
-    setStatus('idle', 'IDLE');
-    log('System initialized. Configure parameters and click Run or Step.', '');
-    switchTab('simulation'); // Default to simulation mode
+    switchTab('live'); // Default to live mode
+    loadSavedRLState();
 }
 
 // ─── Toast Notifications ───────────────────────────────────────────────────
@@ -142,18 +116,9 @@ function switchTab(mode) {
     currentMode = mode;
 
     // Update tab buttons
-    DOM.tabSim.classList.toggle('active', mode === 'simulation');
-    DOM.tabLive.classList.toggle('active', mode === 'live');
+    if (DOM.tabLive) DOM.tabLive.classList.toggle('active', mode === 'live');
+    if (DOM.tabHistory) DOM.tabHistory.classList.toggle('active', mode === 'history');
 
-    // Show/hide panels
-    for (const id of SIM_PANELS) {
-        const el = document.getElementById(id);
-        if (el) {
-            el.style.display = mode === 'simulation' ? '' : 'none';
-            if (mode === 'simulation') el.classList.add('fade-in');
-            else el.classList.remove('fade-in');
-        }
-    }
     for (const id of LIVE_PANELS) {
         const el = document.getElementById(id);
         if (el) {
@@ -162,14 +127,21 @@ function switchTab(mode) {
             else el.classList.remove('fade-in');
         }
     }
+    
+    if (DOM.historyTabContent) {
+        DOM.historyTabContent.style.display = mode === 'history' ? 'block' : 'none';
+        if (mode === 'history') DOM.historyTabContent.classList.add('fade-in');
+    }
 
-    // If switching to live mode, check feed status
+    // Load appropriate contextual data
     if (mode === 'live') {
         checkFeeds();
         refreshDBStats();
         if (!liveSession) {
             initLiveSession();
         }
+    } else if (mode === 'history') {
+        showIOCHistory();
     }
 }
 
@@ -191,196 +163,40 @@ async function initLiveSession() {
     liveSession = createLiveSession();
 }
 
-// ─── Kill Chain Builder ────────────────────────────────────────────────────
-function buildKillChain() {
-    DOM.killChain.innerHTML = '';
-    for (const tactic of TACTICS) {
-        const el = document.createElement('div');
-        el.className = 'kill-chain-stage';
-        el.dataset.tacticId = tactic.id;
-        el.dataset.phase = tactic.phase;
-        el.textContent = tactic.name;
-        el.title = tactic.description;
-        DOM.killChain.appendChild(el);
-    }
-}
-
-// ─── Event Binding ─────────────────────────────────────────────────────────
 function bindEvents() {
-    DOM.detectionCoverage.addEventListener('input', () => {
-        DOM.detectionVal.textContent = DOM.detectionCoverage.value;
-    });
-
     // Tab switching
-    DOM.tabSim.addEventListener('click', () => switchTab('simulation'));
-    DOM.tabLive.addEventListener('click', () => switchTab('live'));
+    if (DOM.tabLive) DOM.tabLive.addEventListener('click', () => switchTab('live'));
+    if (DOM.tabHistory) DOM.tabHistory.addEventListener('click', () => switchTab('history'));
 
-    // Simulation controls
-    DOM.btnRun.addEventListener('click', runFullSimulation);
-    DOM.btnStep.addEventListener('click', stepOnce);
-    DOM.btnReset.addEventListener('click', resetSimulation);
-    DOM.btnTrain.addEventListener('click', trainAgent);
+    // Text search filter for History
+    if (DOM.historyIocSearch && DOM.historyIocTbody) {
+        DOM.historyIocSearch.addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase();
+            const rows = Array.from(DOM.historyIocTbody.getElementsByTagName('tr'));
+            
+            // Filter visible rows
+            rows.forEach(row => {
+                row.style.display = row.textContent.toLowerCase().includes(query) ? '' : 'none';
+            });
+            
+            // Recalculate analytics based on filtered raw data
+            const filteredData = lastFetchedHistory.filter((_, i) => rows[i].style.display !== 'none');
+            updateFeedAnalytics(filteredData);
+        });
+    }
 
     // IOC controls
-    DOM.btnAnalyze.addEventListener('click', runIOCAnalysis);
-    DOM.btnClearIOC.addEventListener('click', clearLiveSession);
-
-    // IOC Database controls
+    if (DOM.btnAnalyze) DOM.btnAnalyze.addEventListener('click', runIOCAnalysis);
+    if (DOM.btnClearIOC) DOM.btnClearIOC.addEventListener('click', clearLiveSession);
     if (DOM.btnIOCHistory) DOM.btnIOCHistory.addEventListener('click', showIOCHistory);
     if (DOM.btnTrainIOC) DOM.btnTrainIOC.addEventListener('click', trainFromIOCs);
+
+    // RL Training panel controls
+    if (DOM.btnTrainQL) DOM.btnTrainQL.addEventListener('click', () => runRLTraining('ql'));
+    if (DOM.btnTrainDQN) DOM.btnTrainDQN.addEventListener('click', () => runRLTraining('dqn'));
 }
 
-// ─── Get Config from UI ────────────────────────────────────────────────────
-function getConfig() {
-    const clamp = (val, min, max, def) => {
-        const parsed = parseFloat(val);
-        if (isNaN(parsed)) return def;
-        return Math.min(Math.max(parsed, min), max);
-    };
 
-    return {
-        attackerType: DOM.attackerType.value,
-        detectionCoverage: clamp(DOM.detectionCoverage.value, 0, 100, 50) / 100,
-        assetCriticality: clamp(DOM.assetCriticality.value, 0, 2, 2),
-        maxSteps: clamp(DOM.maxSteps.value, 5, 50, 20),
-        useRL: DOM.useRL.checked,
-        useGameTheory: DOM.useGT.checked,
-        noisyObservation: true,
-        beliefDecayRate: 0.03,
-    };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  SIMULATION MODE
-// ═══════════════════════════════════════════════════════════════════════════
-
-async function runFullSimulation() {
-    if (isRunning) return;
-    isRunning = true;
-    setStatus('running', 'RUNNING');
-    disableControls(true);
-
-    const config = getConfig();
-    simState = initSimulation(config);
-    clearTrace();
-    clearLog();
-    resetKillChain();
-    updateBeliefUI(simState.belief);
-
-    log('▶ Simulation started', 'log-action');
-    log(`  Attacker: ${ATTACKER_PROFILES[config.attackerType].name} (hidden)`, '');
-    log(`  Detection: ${Math.round(config.detectionCoverage * 100)}% | Steps: ${config.maxSteps}`, '');
-
-    const stepDelay = Math.max(80, 600 / config.maxSteps);
-    while (!simState.gameOver) {
-        await delay(stepDelay);
-        const result = stepSimulation(simState, config.useRL ? rlAgent : null);
-        if (result) renderStep(result);
-    }
-
-    if (simState.metrics) renderMetrics(simState.metrics);
-    renderPayoffHeatmap(simState);
-
-    // Persist simulation result or show accuracy info
-    if (simState.metrics) {
-        saveSimulationResult(simState);
-    }
-
-    log('■ Simulation complete', 'log-action');
-    setStatus('idle', 'DONE');
-    isRunning = false;
-    disableControls(false);
-}
-
-/**
- * Persist simulation results to the database
- */
-async function saveSimulationResult(state) {
-    try {
-        const report = {
-            config: state.config,
-            metrics: state.metrics,
-            history: state.history
-        };
-
-        const resp = await fetch('/api/sim/save', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(report)
-        });
-
-        const data = await resp.json();
-        if (data.success) {
-            log(`✓ Result archived: ${data.simId}`, 'log-info');
-        }
-    } catch (err) {
-        console.warn('Failed to persist simulation:', err);
-    }
-}
-
-function stepOnce() {
-    if (isRunning) return;
-    const config = getConfig();
-    if (!simState || simState.gameOver) {
-        simState = initSimulation(config);
-        clearTrace(); clearLog(); resetKillChain();
-        updateBeliefUI(simState.belief);
-        log('▶ Simulation initialized (step mode)', 'log-action');
-        setStatus('running', 'STEPPING');
-    }
-    const result = stepSimulation(simState, config.useRL ? rlAgent : null);
-    if (result) renderStep(result);
-    if (simState.gameOver && simState.metrics) {
-        renderMetrics(simState.metrics);
-        renderPayoffHeatmap(simState);
-        log('■ Simulation complete', 'log-action');
-        setStatus('idle', 'DONE');
-    }
-}
-
-function resetSimulation() {
-    if (autoPlayTimer) clearInterval(autoPlayTimer);
-    simState = null; isRunning = false;
-    clearTrace(); clearLog(); resetKillChain();
-    updateBeliefUI(createBeliefState());
-    resetMetrics();
-    DOM.predictionsList.innerHTML = '<div class="empty-state"><div class="icon">🔮</div><p>Run simulation to see predictions</p></div>';
-    DOM.actionsList.innerHTML = '<div class="empty-state"><div class="icon">⚔️</div><p>Run simulation to see recommendations</p></div>';
-    DOM.heatmapContainer.innerHTML = '<div class="empty-state"><div class="icon">📊</div><p>Run simulation to see payoff matrix</p></div>';
-    setStatus('idle', 'IDLE');
-    disableControls(false);
-    log('↺ Simulation reset', 'log-action');
-}
-
-async function trainAgent() {
-    if (isRunning) return;
-    isRunning = true;
-    setStatus('running', 'TRAINING');
-    disableControls(true);
-    const config = getConfig();
-    const numEpisodes = 100;
-    log(`🧠 Training RL agent for ${numEpisodes} episodes…`, 'log-action');
-    const batchSize = 5;
-    for (let ep = 0; ep < numEpisodes; ep += batchSize) {
-        await delay(10);
-        const batchEnd = Math.min(ep + batchSize, numEpisodes);
-        for (let i = ep; i < batchEnd; i++) {
-            const state = runEpisode(config, rlAgent);
-            const { recordEpisodeReward, decayEpsilon } = await import('./engine/rl-agent.js');
-            recordEpisodeReward(rlAgent, state.cumulativeDefenderUtility);
-            decayEpsilon(rlAgent);
-        }
-        const stats = getAgentStats(rlAgent);
-        updateTrainingUI(stats);
-        renderTrainingChart(stats.rewardHistory);
-    }
-    const stats = getAgentStats(rlAgent);
-    log(`✓ Training complete: ${stats.episodes} episodes, avg reward: ${stats.avgReward}`, 'log-detect');
-    log(`  Epsilon: ${stats.currentEpsilon}, Q-states: ${stats.qTableStates}`, '');
-    setStatus('idle', 'TRAINED');
-    isRunning = false;
-    disableControls(false);
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  LIVE IOC MODE
@@ -393,8 +209,8 @@ async function runIOCAnalysis() {
     if (!inputText) return;
 
     isRunning = true;
+    isRunning = true;
     DOM.btnAnalyze.disabled = true;
-    setStatus('running', 'ANALYZING');
 
     // Get selected feeds
     const feeds = [];
@@ -412,7 +228,6 @@ async function runIOCAnalysis() {
         if (iocList.length === 0) {
             isRunning = false;
             DOM.btnAnalyze.disabled = false;
-            setStatus('idle', 'IDLE');
             return;
         }
 
@@ -464,7 +279,7 @@ async function runIOCAnalysis() {
         const lastResult = liveSession.iocs[liveSession.iocs.length - 1];
         if (lastResult) renderEnrichment(lastResult.enrichment);
 
-        setStatus('idle', 'DONE');
+        // Status handled implicitly by enabled button
     } catch (e) {
         // Surface the error to the user via toast
         showError(`Analysis failed: ${e.message}`);
@@ -475,7 +290,7 @@ async function runIOCAnalysis() {
                 <p style="font-size: 0.72rem; margin-top: 4px; color: var(--text-muted);">Make sure the server is running (node server.js) and API keys are configured.</p>
             </div>
         `;
-        setStatus('idle', 'ERROR');
+        // Status handled implicitly by enabled button
     }
 
     isRunning = false;
@@ -515,103 +330,157 @@ async function refreshDBStats() {
 
 async function showIOCHistory() {
     try {
-        DOM.enrichmentContent.innerHTML = `
-            <div style="text-align:center; padding: 20px;">
-                <div style="color: var(--accent-cyan); margin-bottom: 8px;">📊 Loading IOC History…</div>
-                <div class="progress-bar"><div class="progress-bar-fill" style="width:50%"></div></div>
-            </div>
-        `;
+        if (!DOM.historyIocTbody) return;
+        DOM.historyIocTbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding: 20px;">
+            <div style="color: var(--accent-cyan); margin-bottom: 8px;">📊 Loading IOC History…</div>
+            <div class="progress-bar"><div class="progress-bar-fill" style="width:50%"></div></div>
+        </td></tr>`;
 
-        const resp = await fetch('/api/ioc/history?limit=30');
+        const resp = await fetch('/api/ioc/history?limit=100');
         const history = await resp.json();
+        lastFetchedHistory = history;
 
         if (!history || history.length === 0) {
-            DOM.enrichmentContent.innerHTML = '<div class="empty-state"><div class="icon">📊</div><p>No IOC history in database yet. Analyze some IOCs first!</p></div>';
+            DOM.historyIocTbody.innerHTML = '<tr><td colspan="8" style="text-align:center;">No IOC history in database yet. Analyze some IOCs first!</td></tr>';
+            updateFeedAnalytics([]);
             return;
         }
 
-        let html = '<div style="font-size:0.78rem; color:var(--text-secondary); margin-bottom:8px; text-transform:uppercase; letter-spacing:0.05em; font-weight:600;">Recent IOC Analyses (from database)</div>';
-        html += '<div style="max-height:400px; overflow-y:auto;">';
-
-        for (const row of history) {
+        let html = '';
+        history.forEach((row, i) => {
             const threatClass = `threat-${row.threat_level || 'NONE'}`;
-            const techs = (() => { try { return JSON.parse(row.techniques_json || '[]'); } catch { return []; } })();
             html += `
-                <div class="enrichment-feed" style="margin-bottom:8px; padding:8px; border-left:3px solid var(--border-primary);">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <strong style="color:var(--text-primary); font-size:0.85rem;">${row.ioc}</strong>
-                        <span class="threat-badge ${threatClass}">${row.threat_level || 'NONE'}</span>
-                    </div>
-                    <div style="color:var(--text-muted); font-size:0.72rem; margin-top:4px;">
-                        Type: ${row.type} · Score: ${row.threat_score} · Entropy: ${(row.belief_entropy || 0).toFixed(2)}
-                        ${techs.length > 0 ? ` · Techniques: ${techs.join(', ')}` : ''}
-                        <br>Predicted: ${row.most_probable_type || '—'} · Action: ${row.defender_action || '—'}
-                        <br><span style="color:var(--text-muted);">${row.timestamp}</span>
-                    </div>
-                </div>
+                <tr class="animate-in" style="animation-delay: ${i * 10}ms">
+                    <td>${i + 1}</td>
+                    <td style="font-weight:600; color:var(--text-primary);">${row.ioc}</td>
+                    <td><span class="source-tag">${row.type}</span></td>
+                    <td><span class="threat-badge ${threatClass}">${row.threat_level || 'NONE'}</span></td>
+                    <td style="color:${row.threat_score > 50 ? 'var(--accent-red)' : 'var(--text-secondary)'}">${row.threat_score}</td>
+                    <td>${row.most_probable_type ? `<span style="color:var(--accent-purple)">${row.most_probable_type}</span>` : '—'}</td>
+                    <td>${row.defender_action || '—'}</td>
+                    <td style="font-size:0.75rem; color:var(--text-muted)">${new Date(row.timestamp).toLocaleDateString()}</td>
+                </tr>
             `;
-        }
-        html += '</div>';
-
-        DOM.enrichmentContent.innerHTML = html;
+        });
+        
+        DOM.historyIocTbody.innerHTML = html;
+        updateFeedAnalytics(history);
     } catch (e) {
         showError('Failed to load IOC history: ' + e.message);
+        if (DOM.historyIocTbody) DOM.historyIocTbody.innerHTML = `<tr><td colspan="8" style="color:var(--accent-red);text-align:center;">Failed to load data</td></tr>`;
     }
 }
 
-async function trainFromIOCs() {
-    if (isRunning) return;
-    isRunning = true;
-    setStatus('running', 'RL REPLAY');
-
-    try {
-        const resp = await fetch('/api/ioc/rl-replay', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ limit: 500 })
+async function updateFeedAnalytics(data) {
+    if (!data || data.length === 0) {
+        [DOM.vtHistoryChart, DOM.abuseHistoryChart, DOM.otxHistoryChart].forEach(el => {
+            if (el) el.innerHTML = '<div class="empty-state-sm">No analysis history available</div>';
         });
-        const data = await resp.json();
-
-        if (!data.success || !data.experiences || data.experiences.length === 0) {
-            showError('No RL experiences stored yet. Analyze IOCs first to generate training data.');
-            setStatus('idle', 'NO DATA');
-            isRunning = false;
-            return;
-        }
-
-        // Replay experiences into the RL agent's Q-table
-        const { updateQValue } = await import('./engine/rl-agent.js');
-        let replayed = 0;
-        for (const exp of data.experiences) {
-            updateQValue(rlAgent, exp.stateKey, exp.actionIdx, exp.reward, exp.nextStateKey);
-            replayed++;
-        }
-
-        const stats = getAgentStats(rlAgent);
-        log(`🧠 RL Replay: ${replayed} IOC experiences applied to Q-table`, 'log-action');
-        log(`  Q-states: ${stats.qTableStates} · Avg reward: ${stats.avgReward}`, '');
-
-        // Update training UI
-        DOM.tsEpisodes.textContent = stats.episodes;
-        DOM.tsEpsilon.textContent = stats.currentEpsilon.toFixed(3);
-        DOM.tsReward.textContent = stats.recentAvgReward.toFixed(1);
-
-        setStatus('idle', 'TRAINED');
-        showError = window.showError; // ensure reference
-        const container = document.getElementById('toast-container');
-        if (container) {
-            const toast = document.createElement('div');
-            toast.className = 'toast info';
-            toast.innerHTML = `<div class="toast-icon">🧠</div><div class="toast-content">Trained from ${replayed} IOC experiences</div>`;
-            container.appendChild(toast);
-            setTimeout(() => { toast.classList.add('hiding'); setTimeout(() => toast.remove(), 300); }, 4000);
-        }
-    } catch (e) {
-        showError('RL replay failed: ' + e.message);
-        setStatus('idle', 'ERROR');
+        if (DOM.hmTotalIocs) DOM.hmTotalIocs.textContent = '0';
+        if (DOM.hmMaliciousIocs) DOM.hmMaliciousIocs.textContent = '0';
+        if (DOM.hmAvgScore) DOM.hmAvgScore.textContent = '0';
+        return;
     }
 
-    isRunning = false;
+    // 1. Basic Metrics
+    const maliciousCount = data.filter(d => d.threat_level === 'HIGH' || d.threat_level === 'CRITICAL').length;
+    const avgScore = Math.round(data.reduce((acc, d) => acc + (d.threat_score || 0), 0) / data.length);
+    
+    if (DOM.hmTotalIocs) DOM.hmTotalIocs.textContent = data.length;
+    if (DOM.hmMaliciousIocs) DOM.hmMaliciousIocs.textContent = maliciousCount;
+    if (DOM.hmAvgScore) DOM.hmAvgScore.textContent = avgScore;
+
+    // 2. Feed Processing
+    let vtDetections = 0;
+    let vtTotal = 0;
+    let abuseScores = [];
+    let otxPulseTotal = 0;
+    let processedVT = 0;
+    let processedAbuse = 0;
+    let processedOTX = 0;
+
+    data.forEach(row => {
+        try {
+            const enrichment = JSON.parse(row.enrichment_json || '{}');
+            
+            // VT
+            if (enrichment.results?.virustotal) {
+                const vt = enrichment.results.virustotal;
+                const stats = vt.data?.attributes?.last_analysis_stats || vt.attributes?.last_analysis_stats;
+                if (stats) {
+                    vtDetections += stats.malicious || 0;
+                    vtTotal += (stats.malicious + stats.undetected + stats.suspicious) || 1;
+                    processedVT++;
+                }
+            }
+
+            // AbuseIPDB
+            if (enrichment.results?.abuseipdb) {
+                const abuse = enrichment.results.abuseipdb;
+                if (abuse.abuseConfidenceScore !== undefined) {
+                    abuseScores.push(abuse.abuseConfidenceScore);
+                    processedAbuse++;
+                }
+            }
+
+            // OTX
+            if (enrichment.results?.otx) {
+                const otx = enrichment.results.otx;
+                const pulseCount = otx.pulse_info?.count || 0;
+                otxPulseTotal += pulseCount;
+                processedOTX++;
+            }
+        } catch (e) {
+            console.warn("Failed to parse enrichment for row:", row.id);
+        }
+    });
+
+    // 3. Render VT Gauge
+    const vtPercent = processedVT > 0 ? Math.round((vtDetections / vtTotal) * 100) : 0;
+    DOM.vtHistoryChart.innerHTML = `
+        <div class="history-gauge">
+            <div class="hg-value" style="background: linear-gradient(135deg, var(--accent-red), #ff7e5f); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">${vtPercent}%</div>
+            <div class="hg-label">Detection Hit Rate</div>
+            <div class="hg-sub">Aggregated across ${processedVT} engines</div>
+        </div>
+        <div class="history-meter">
+            <div class="hm-track"><div class="hm-fill" style="width: ${vtPercent}%; background: var(--accent-red);"></div></div>
+            <div class="hm-stats"><span>Clean</span><span>Malicious</span></div>
+        </div>
+    `;
+
+    // 4. Render AbuseIPDB Gauge
+    const avgAbuse = abuseScores.length > 0 ? Math.round(abuseScores.reduce((a, b) => a + b) / abuseScores.length) : 0;
+    DOM.abuseHistoryChart.innerHTML = `
+        <div class="history-gauge">
+            <div class="hg-value" style="background: linear-gradient(135deg, var(--accent-amber), #feb47b); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">${avgAbuse}</div>
+            <div class="hg-label">Mean Confidence Score</div>
+            <div class="hg-sub">Based on ${processedAbuse} unique reports</div>
+        </div>
+        <div class="history-meter">
+            <div class="hm-track"><div class="hm-fill" style="width: ${avgAbuse}%; background: var(--accent-amber);"></div></div>
+            <div class="hm-stats"><span>Safe</span><span>Reported</span></div>
+        </div>
+    `;
+
+    // 5. Render OTX Gauge
+    const avgPulses = processedOTX > 0 ? (otxPulseTotal / processedOTX).toFixed(1) : 0;
+    DOM.otxHistoryChart.innerHTML = `
+        <div class="history-gauge">
+            <div class="hg-value" style="background: linear-gradient(135deg, var(--accent-purple), #8e2de2); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">${avgPulses}</div>
+            <div class="hg-label">Average Pulse Frequency</div>
+            <div class="hg-sub">Threat community mentions</div>
+        </div>
+        <div class="history-meter">
+            <div class="hm-track"><div class="hm-fill" style="width: ${Math.min(avgPulses * 10, 100)}%; background: var(--accent-purple);"></div></div>
+            <div class="hm-stats"><span>Isolated</span><span>Trending</span></div>
+        </div>
+    `;
+}
+
+async function trainFromIOCs() {
+    // Delegate to the RL training panel's Q-Learning trainer
+    await runRLTraining('ql');
 }
 
 // ─── Render IOC Result ─────────────────────────────────────────────────────
@@ -675,6 +544,19 @@ function renderMappedTechniques(session) {
             <span class="prediction-tactic">${tech.sources.join(', ')}</span>
         `;
         DOM.mappedTechniquesList.appendChild(el);
+    });
+}
+
+function updateBeliefUI(belief) {
+    if (!belief) return;
+    const types = ['script_kiddie', 'organized_crime', 'apt_state', 'insider_threat'];
+    types.forEach((type, i) => {
+        const el = $(`belief-${i}`);
+        if (el && belief[type] !== undefined) {
+            const pct = (belief[type] * 100).toFixed(1) + '%';
+            el.style.width = pct;
+            el.setAttribute('data-value', pct);
+        }
     });
 }
 
@@ -779,6 +661,22 @@ function renderLiveActions(actions) {
     DOM.actionsList.innerHTML = '';
     DOM.actionsPanel.style.display = '';
 
+    // Render Global Multi-Agent Action if present (threat-cluster overlap)
+    if (liveSession && liveSession.globalMultiAgentStrategy) {
+        const globalObj = liveSession.globalMultiAgentStrategy;
+        const globalEl = document.createElement('div');
+        globalEl.className = 'action-item global-action animate-in';
+        globalEl.style.border = '1px solid var(--accent-purple)';
+        globalEl.style.background = 'rgba(157, 78, 221, 0.1)';
+        const euClass = globalObj.globalUtility >= 0 ? 'positive' : 'negative';
+        globalEl.innerHTML = `
+            <span class="action-eu ${euClass}">${globalObj.globalUtility >= 0 ? '+' : ''}${globalObj.globalUtility.toFixed(1)}</span>
+            <span class="action-name" style="color:var(--accent-purple);font-weight:600;">[MULTI-THREAT GLOBAL] ${globalObj.bestGlobalAction}</span>
+            <span class="action-meta">Optimal payout factoring ${globalObj.activeThreatsCount} concurrent threat clusters</span>
+        `;
+        DOM.actionsList.appendChild(globalEl);
+    }
+
     actions.forEach((action, i) => {
         const el = document.createElement('div');
         el.className = 'action-item animate-in';
@@ -794,276 +692,145 @@ function renderLiveActions(actions) {
 }
 
 function updateLiveKillChain(coverage) {
-    const stages = DOM.killChain.querySelectorAll('.kill-chain-stage');
-    stages.forEach(stage => {
-        const tacticId = stage.dataset.tacticId;
-        if (coverage[tacticId] && coverage[tacticId].length > 0) {
-            stage.classList.add('active');
-            stage.title = `${stage.textContent}: ${coverage[tacticId].join(', ')}`;
-        }
-    });
+    // Kill chain stages are rendered in mapped techniques panel
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SHARED RENDERING
+//  RL TRAINING FROM IOC REPLAY
 // ═══════════════════════════════════════════════════════════════════════════
 
-function renderStep(step) {
-    updateBeliefUI(step.belief);
-    DOM.entropyBadge.textContent = `H = ${step.beliefEntropy.toFixed(2)}`;
-    updateKillChain(step.tacticPhase, step.tacticId, step.detected);
-    DOM.tacticBadge.textContent = `Phase: ${step.tacticName}`;
-    DOM.stepBadge.textContent = `Step: ${step.timestep + 1}`;
-    if (step.predictions?.length > 0) renderPredictions(step.predictions);
-    if (step.gameAnalysis?.rankedActions) renderActions(step.gameAnalysis.rankedActions);
-    addTraceRow(step);
-
-    const detectClass = step.detected ? 'log-detect' : 'log-miss';
-    const detectText = step.detected ? '✓ DETECTED' : '✗ MISSED';
-    log(`[T${step.timestep}] ${step.technique.name} → ${detectText}`, detectClass);
-    if (step.defenderAction) {
-        log(`  ↳ Action: ${step.defenderAction.name}${step.defenderAction.isExploration ? ' (explore)' : ''}`, 'log-action');
-    }
-    if (step.attackPrevented) log(`  ↳ Attack PREVENTED`, 'log-prevent');
-
-    if (simState) {
-        const steps = simState.history.length;
-        const detections = simState.history.filter(s => s.detected).length;
-        const preventions = simState.history.filter(s => s.attackPrevented).length;
-        DOM.mDetect.textContent = `${Math.round(detections / steps * 100)}%`;
-        DOM.mPrevent.textContent = `${Math.round(preventions / steps * 100)}%`;
-        DOM.mUtility.textContent = simState.cumulativeDefenderUtility.toFixed(1);
-        DOM.mAtkUtility.textContent = simState.cumulativeAttackerUtility.toFixed(1);
-    }
-}
-
-function updateBeliefUI(belief) {
-    const types = ATTACKER_TYPES;
-    const fills = DOM.beliefBars.querySelectorAll('.belief-bar-fill');
-    for (let i = 0; i < types.length; i++) {
-        const prob = belief[types[i]] || 0;
-        const pct = Math.round(prob * 100);
-        fills[i].style.width = `${Math.max(pct, 2)}%`;
-        fills[i].setAttribute('data-value', `${pct}%`);
-    }
-    const entropy = getBeliefEntropy(belief);
-    DOM.entropyBadge.textContent = `H = ${entropy.toFixed(2)}`;
-}
-
-function updateKillChain(currentPhase, currentTacticId, wasDetected) {
-    const stages = DOM.killChain.querySelectorAll('.kill-chain-stage');
-    stages.forEach(stage => {
-        const phase = parseInt(stage.dataset.phase);
-        if (phase < currentPhase) { stage.classList.add('visited'); stage.classList.remove('active'); }
-        else if (phase === currentPhase) {
-            stage.classList.add('active'); stage.classList.remove('visited');
-            if (wasDetected) stage.classList.add('detected');
+/**
+ * Fetch experience count and update the RL panel display
+ */
+async function refreshRLExpCount() {
+    try {
+        const resp = await fetch('/api/ioc/rl-experiences?limit=1');
+        const data = await resp.json();
+        if (DOM.rlExpCount) {
+            // Get actual count from a stats call
+            const statsResp = await fetch('/api/history/summary');
+            const summary = await statsResp.json();
+            DOM.rlExpCount.textContent = summary.rlExperiences || 0;
         }
-    });
+    } catch (e) {
+        if (DOM.rlExpCount) DOM.rlExpCount.textContent = '?';
+    }
 }
 
-function resetKillChain() {
-    DOM.killChain.querySelectorAll('.kill-chain-stage').forEach(s => {
-        s.classList.remove('active', 'visited', 'detected');
-    });
-    DOM.tacticBadge.textContent = 'Phase: —';
+/**
+ * Run RL training from stored IOC experiences
+ * @param {'ql'|'dqn'} agentType - Which agent to train
+ */
+async function runRLTraining(agentType) {
+    if (isRunning) return;
+    isRunning = true;
+
+    const btnQL = DOM.btnTrainQL;
+    const btnDQN = DOM.btnTrainDQN;
+    const outputEl = DOM.rlTrainOutput;
+    if (btnQL) btnQL.disabled = true;
+    if (btnDQN) btnDQN.disabled = true;
+
+    const agentLabel = agentType === 'dqn' ? 'DQN' : 'Q-Learning';
+    if (outputEl) outputEl.innerHTML = `<div class="rl-train-status">⏳ Fetching experiences for ${agentLabel}…</div>`;
+
+    try {
+        // 1. Fetch stored experiences
+        const resp = await fetch('/api/ioc/rl-replay', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ limit: 1000 })
+        });
+        const data = await resp.json();
+
+        if (!data.success || !data.experiences || data.experiences.length === 0) {
+            if (outputEl) outputEl.innerHTML = `<div class="rl-train-status" style="color:var(--accent-amber);">⚠ No experiences stored. Analyze IOCs first to generate training data.</div>`;
+            isRunning = false;
+            if (btnQL) btnQL.disabled = false;
+            if (btnDQN) btnDQN.disabled = false;
+            return;
+        }
+
+        const exps = data.experiences;
+        if (outputEl) outputEl.innerHTML = `<div class="rl-train-status">🧠 Training ${agentLabel} on ${exps.length} experiences…</div>`;
+
+        // Small delay to let UI update
+        await delay(50);
+
+        // 2. Run training
+        let result;
+        if (agentType === 'dqn') {
+            result = trainFromIOCReplay(dqnAgent, exps, 3);
+        } else {
+            result = trainFromReplayBatch(rlAgent, exps, 5);
+        }
+
+        // 3. Persist Q-table
+        if (agentType === 'ql') {
+            try {
+                await fetch('/api/rl/q-table', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(exportQTable(rlAgent))
+                });
+            } catch (e) { console.warn('Q-table persistence failed:', e); }
+        }
+
+        // 4. Render results
+        const stats = agentType === 'dqn' ? getDQNAgentStats(dqnAgent) : getAgentStats(rlAgent);
+        renderRLTrainingResults(agentType, result, stats);
+
+        // Toast notification
+        showInfo(`${agentLabel} trained: ${result.updatesApplied} updates from ${exps.length} experiences`);
+
+    } catch (e) {
+        if (outputEl) outputEl.innerHTML = `<div class="rl-train-status" style="color:var(--accent-red);">❌ Training failed: ${e.message}</div>`;
+        showError('RL training failed: ' + e.message);
+    }
+
+    isRunning = false;
+    if (btnQL) btnQL.disabled = false;
+    if (btnDQN) btnDQN.disabled = false;
 }
 
-function renderPredictions(predictions) {
-    DOM.predictionsList.innerHTML = '';
-    predictions.forEach((pred, i) => {
-        const el = document.createElement('div');
-        el.className = 'prediction-item animate-in';
-        el.style.animationDelay = `${i * 50}ms`;
-        el.innerHTML = `
-            <span class="prediction-rank">${i + 1}</span>
-            <span class="prediction-name">${pred.name} <small style="color:var(--text-muted)">(${pred.id})</small></span>
-            <span class="prediction-prob">${(pred.probability * 100).toFixed(1)}%</span>
-            <span class="prediction-tactic">${pred.tacticName}</span>
-        `;
-        DOM.predictionsList.appendChild(el);
-    });
-}
+/**
+ * Render training results in the RL panel
+ */
+function renderRLTrainingResults(agentType, result, stats) {
+    const outputEl = DOM.rlTrainOutput;
+    if (!outputEl) return;
 
-function renderActions(actions) {
-    DOM.actionsList.innerHTML = '';
-    actions.forEach((action, i) => {
-        const el = document.createElement('div');
-        el.className = 'action-item animate-in';
-        el.style.animationDelay = `${i * 50}ms`;
-        const euClass = action.expectedUtility >= 0 ? 'positive' : 'negative';
-        el.innerHTML = `
-            <span class="action-eu ${euClass}">${action.expectedUtility >= 0 ? '+' : ''}${action.expectedUtility.toFixed(1)}</span>
-            <span class="action-name">${action.name}</span>
-            <span class="action-meta">Cost: ${(action.cost * 100).toFixed(0)}% · Disr: ${(action.disruption * 100).toFixed(0)}%</span>
-        `;
-        DOM.actionsList.appendChild(el);
-    });
-}
+    const label = agentType === 'dqn' ? 'DQN' : 'Q-Learning';
+    const lossLine = agentType === 'dqn' ? `<div class="rl-stat"><span class="rl-stat-label">Avg Loss</span><span class="rl-stat-value">${result.avgLoss}</span></div>` : '';
 
-function addTraceRow(step) {
-    const row = document.createElement('tr');
-    row.className = 'animate-in';
-    const detectClass = step.detected ? 'detected-yes' : 'detected-no';
-    const preventClass = step.attackPrevented ? 'prevented' : 'not-prevented';
-    const topBelief = step.mostProbableType;
-    const actionLabel = step.defenderAction.isExploration ? `${step.defenderAction.name} 🎲` : step.defenderAction.name;
-    row.innerHTML = `
-        <td>${step.timestep}</td>
-        <td>${step.tacticName}</td>
-        <td title="${step.technique.id}">${step.technique.name}</td>
-        <td class="${detectClass}">${step.detected ? '✓' : '✗'}</td>
-        <td title="P=${(topBelief.probability * 100).toFixed(0)}%">${formatTypeName(topBelief.type)}</td>
-        <td title="${step.defenderAction.id}">${actionLabel}</td>
-        <td class="${preventClass}">${step.attackPrevented ? '✓' : '—'}</td>
-        <td>${step.defenderUtility >= 0 ? '+' : ''}${step.defenderUtility.toFixed(1)}</td>
-        <td>${step.attackerUtility >= 0 ? '+' : ''}${step.attackerUtility.toFixed(1)}</td>
-        <td>${step.reward >= 0 ? '+' : ''}${step.reward.toFixed(1)}</td>
+    outputEl.innerHTML = `
+        <div class="rl-train-status" style="color:var(--accent-green);">✅ ${label} training complete</div>
+        <div class="rl-stats-mini">
+            <div class="rl-stat"><span class="rl-stat-label">Updates</span><span class="rl-stat-value">${result.updatesApplied}</span></div>
+            <div class="rl-stat"><span class="rl-stat-label">Avg Reward</span><span class="rl-stat-value">${result.avgReward ?? '—'}</span></div>
+            ${lossLine}
+            <div class="rl-stat"><span class="rl-stat-label">Episodes</span><span class="rl-stat-value">${stats.episodes}</span></div>
+            <div class="rl-stat"><span class="rl-stat-label">ε (Explore)</span><span class="rl-stat-value">${stats.currentEpsilon.toFixed(3)}</span></div>
+            <div class="rl-stat"><span class="rl-stat-label">${agentType === 'dqn' ? 'Buffer' : 'Q-States'}</span><span class="rl-stat-value">${stats.qTableStates}</span></div>
+        </div>
     `;
-    DOM.traceBody.appendChild(row);
-    const container = DOM.traceBody.closest('.trace-container');
-    if (container) container.scrollTop = container.scrollHeight;
 }
 
-function clearTrace() { DOM.traceBody.innerHTML = ''; DOM.stepBadge.textContent = 'Step: 0'; }
-
-function renderMetrics(metrics) {
-    DOM.mDetect.textContent = `${Math.round(metrics.detectionRate * 100)}%`;
-    DOM.mPrevent.textContent = `${Math.round(metrics.preventionRate * 100)}%`;
-    DOM.mCost.textContent = metrics.totalCost.toFixed(1);
-    DOM.mUtility.textContent = metrics.cumulativeDefenderUtility.toFixed(1);
-    DOM.mAtkUtility.textContent = metrics.cumulativeAttackerUtility.toFixed(1);
-    DOM.mTTD.textContent = metrics.timeToDetection >= 0 ? `T${metrics.timeToDetection}` : 'N/A';
-    DOM.mLogLoss.textContent = metrics.logLoss ? metrics.logLoss.toFixed(2) : '—';
-    DOM.mHitRate.textContent = metrics.top3HitRate ? `${Math.round(metrics.top3HitRate * 100)}%` : '—';
-}
-
-function resetMetrics() {
-    DOM.mDetect.textContent = '—'; DOM.mPrevent.textContent = '—'; DOM.mCost.textContent = '—';
-    DOM.mUtility.textContent = '—'; DOM.mAtkUtility.textContent = '—'; DOM.mTTD.textContent = '—';
-    DOM.mLogLoss.textContent = '—'; DOM.mHitRate.textContent = '—';
-}
-
-function updateTrainingUI(stats) {
-    DOM.tsEpisodes.textContent = stats.episodes;
-    DOM.tsEpsilon.textContent = stats.currentEpsilon.toFixed(3);
-    DOM.tsReward.textContent = stats.recentAvgReward.toFixed(1);
-}
-
-function renderTrainingChart(rewardHistory) {
-    const canvas = DOM.trainingChart;
-    const ctx = canvas.getContext('2d');
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
-    const w = rect.width, h = rect.height;
-    const padding = { top: 20, right: 20, bottom: 30, left: 50 };
-    const plotW = w - padding.left - padding.right;
-    const plotH = h - padding.top - padding.bottom;
-    ctx.clearRect(0, 0, w, h);
-    if (rewardHistory.length < 2) return;
-    const windowSize = Math.min(10, Math.floor(rewardHistory.length / 3) || 1);
-    const smoothed = [];
-    for (let i = 0; i < rewardHistory.length; i++) {
-        const start = Math.max(0, i - windowSize + 1);
-        const slice = rewardHistory.slice(start, i + 1);
-        smoothed.push(slice.reduce((s, v) => s + v, 0) / slice.length);
-    }
-    const minR = Math.min(...rewardHistory), maxR = Math.max(...rewardHistory);
-    const range = maxR - minR || 1;
-    const toX = i => padding.left + (i / (rewardHistory.length - 1)) * plotW;
-    const toY = v => padding.top + plotH - ((v - minR) / range) * plotH;
-    ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1;
-    for (let i = 0; i <= 4; i++) {
-        const y = padding.top + (plotH / 4) * i;
-        ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(w - padding.right, y); ctx.stroke();
-        const val = maxR - (range / 4) * i;
-        ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = '10px JetBrains Mono, monospace';
-        ctx.textAlign = 'right'; ctx.fillText(val.toFixed(0), padding.left - 6, y + 3);
-    }
-    ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(255,255,255,0.3)';
-    for (const idx of [0, Math.floor(rewardHistory.length / 2), rewardHistory.length - 1]) {
-        ctx.fillText(idx.toString(), toX(idx), h - 8);
-    }
-    ctx.fillStyle = 'rgba(56, 189, 248, 0.15)';
-    for (let i = 0; i < rewardHistory.length; i++) {
-        ctx.beginPath(); ctx.arc(toX(i), toY(rewardHistory[i]), 2, 0, Math.PI * 2); ctx.fill();
-    }
-    ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2; ctx.beginPath();
-    ctx.moveTo(toX(0), toY(smoothed[0]));
-    for (let i = 1; i < smoothed.length; i++) ctx.lineTo(toX(i), toY(smoothed[i]));
-    ctx.stroke();
-    const gradient = ctx.createLinearGradient(0, padding.top, 0, h - padding.bottom);
-    gradient.addColorStop(0, 'rgba(56, 189, 248, 0.15)'); gradient.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
-    ctx.fillStyle = gradient; ctx.beginPath();
-    ctx.moveTo(toX(0), toY(smoothed[0]));
-    for (let i = 1; i < smoothed.length; i++) ctx.lineTo(toX(i), toY(smoothed[i]));
-    ctx.lineTo(toX(smoothed.length - 1), h - padding.bottom); ctx.lineTo(toX(0), h - padding.bottom);
-    ctx.closePath(); ctx.fill();
-    ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.font = '10px Inter, sans-serif';
-    ctx.textAlign = 'center'; ctx.fillText('Episode', w / 2, h - 2);
-    ctx.save(); ctx.translate(12, h / 2); ctx.rotate(-Math.PI / 2);
-    ctx.fillText('Reward', 0, 0); ctx.restore();
-}
-
-function renderPayoffHeatmap(simState) {
-    if (!simState || simState.history.length === 0) return;
-    const usedTechIds = [...new Set(simState.attackerTechniques)].slice(0, 8);
-    const actionIds = DEFENDER_ACTION_IDS.slice(0, 8);
-    const payoff = computePayoffMatrix(usedTechIds, actionIds, simState.config.detectionCoverage);
-    const allVals = payoff.defenderMatrix.flat();
-    const minVal = Math.min(...allVals), maxVal = Math.max(...allVals);
-    let html = '<table class="heatmap-table"><thead><tr><th class="row-header">Technique \\ Action</th>';
-    for (const actId of actionIds) { html += `<th title="${DEFENDER_ACTIONS[actId]?.name || actId}">${abbreviate(DEFENDER_ACTIONS[actId]?.name || actId)}</th>`; }
-    html += '</tr></thead><tbody>';
-    for (let i = 0; i < usedTechIds.length; i++) {
-        const tech = TECHNIQUE_BY_ID[usedTechIds[i]];
-        const name = tech ? tech.name : usedTechIds[i];
-        html += `<tr><th class="row-header" title="${name}">${abbreviate(name, 16)}</th>`;
-        for (let j = 0; j < actionIds.length; j++) {
-            const val = payoff.defenderMatrix[i][j];
-            const color = heatmapColor(val, minVal, maxVal);
-            html += `<td class="heatmap-cell" style="background:${color}" title="${name} vs ${DEFENDER_ACTIONS[actionIds[j]]?.name}: ${val.toFixed(1)}">${val.toFixed(1)}</td>`;
+/**
+ * Load saved RL state from server on startup
+ */
+async function loadSavedRLState() {
+    try {
+        const resp = await fetch('/api/rl/q-table');
+        if (resp.ok) {
+            const data = await resp.json();
+            importQTable(rlAgent, data);
+            console.log(`Loaded Q-table: ${Object.keys(rlAgent.qTable).length} states`);
         }
-        html += '</tr>';
+    } catch (e) {
+        // No saved Q-table, that's fine
     }
-    html += '</tbody></table>';
-    DOM.heatmapContainer.innerHTML = html;
-}
-
-function heatmapColor(val, min, max) {
-    const range = max - min || 1;
-    const t = (val - min) / range;
-    if (t < 0.5) { return `rgba(220, ${Math.round(100 + t * 2 * 155)}, 60, 0.7)`; }
-    else { return `rgba(${Math.round(220 - (t - 0.5) * 2 * 160)}, 200, ${Math.round(60 + (t - 0.5) * 2 * 80)}, 0.7)`; }
-}
-
-// ─── Logging ───────────────────────────────────────────────────────────────
-function log(message, cssClass) {
-    const entry = document.createElement('div');
-    entry.className = `log-entry ${cssClass || ''}`;
-    entry.textContent = message;
-    DOM.simLog.appendChild(entry);
-    DOM.simLog.scrollTop = DOM.simLog.scrollHeight;
-    while (DOM.simLog.children.length > 100) DOM.simLog.removeChild(DOM.simLog.firstChild);
-}
-
-function clearLog() { DOM.simLog.innerHTML = ''; }
-
-function setStatus(state, label) {
-    const dot = DOM.statusBadge.querySelector('.status-dot') || document.createElement('span');
-    dot.className = `status-dot ${state}`;
-    DOM.statusBadge.innerHTML = '';
-    DOM.statusBadge.appendChild(dot);
-    DOM.statusBadge.appendChild(document.createTextNode(label));
-}
-
-function disableControls(disabled) {
-    DOM.btnRun.disabled = disabled;
-    DOM.btnStep.disabled = disabled;
-    DOM.btnReset.disabled = disabled;
-    DOM.btnTrain.disabled = disabled;
+    refreshRLExpCount();
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

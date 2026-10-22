@@ -13,7 +13,8 @@ import {
     updateAgent,
     decayEpsilon,
     getAgentStats,
-    resetAgent
+    resetAgent,
+    trainFromReplayBatch
 } from '../js/engine/rl-agent.js';
 
 import { DEFENDER_ACTION_IDS } from '../js/data/defender-actions.js';
@@ -155,5 +156,49 @@ describe('resetAgent', () => {
         assert.equal(Object.keys(agent.qTable).length, 0);
         assert.equal(agent.alpha, 0.8);
         assert.equal(agent.epsilon, customConfig.epsilon); // should reset to initial epsilon
+    });
+});
+
+// ─── trainFromReplayBatch ────────────────────────────────────────────────
+
+describe('trainFromReplayBatch', () => {
+    it('returns zero stats for empty batch', () => {
+        const agent = createAgent();
+        const result = trainFromReplayBatch(agent, []);
+        assert.equal(result.updatesApplied, 0);
+        assert.equal(result.avgReward, 0);
+    });
+
+    it('applies Q-value updates from DB-format experiences', () => {
+        const agent = createAgent({ alpha: 0.5 });
+        const exps = [
+            { stateKey: '3_5_2_1_0', actionIdx: 0, reward: 1.5, nextStateKey: '4_5_2_1_0', done: false },
+            { stateKey: '4_5_2_1_0', actionIdx: 2, reward: -0.5, nextStateKey: '5_5_2_1_0', done: false },
+            { stateKey: '5_5_2_1_0', actionIdx: 1, reward: 2.0, nextStateKey: null, done: true },
+        ];
+        const result = trainFromReplayBatch(agent, exps, 1);
+        assert.equal(result.updatesApplied, 3);
+        assert.ok(result.qTableSize > 0, 'Q-table should have states after training');
+        assert.ok(agent.episodeCount === 1, 'Should increment episode count');
+    });
+
+    it('handles snake_case DB field names', () => {
+        const agent = createAgent();
+        const exps = [
+            { state_key: '1_0_1_1_0', action_idx: 0, reward: 1.0, next_state_key: '2_0_1_1_0', done: 0 },
+        ];
+        const result = trainFromReplayBatch(agent, exps, 1);
+        assert.equal(result.updatesApplied, 1);
+    });
+
+    it('multiple epochs re-train on same batch', () => {
+        const agent = createAgent({ alpha: 0.1 });
+        const exps = [
+            { stateKey: '0_10_1_1_0', actionIdx: 0, reward: 5.0, nextStateKey: '1_10_1_1_0', done: true },
+        ];
+        const result = trainFromReplayBatch(agent, exps, 3);
+        assert.equal(result.updatesApplied, 3); // 1 exp × 3 epochs
+        assert.equal(agent.episodeCount, 3);
+        assert.equal(agent.rewardHistory.length, 3);
     });
 });

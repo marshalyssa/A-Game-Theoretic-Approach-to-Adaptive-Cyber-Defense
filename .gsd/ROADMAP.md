@@ -19,13 +19,14 @@
 ## Phases
 
 ### Phase 1: Testing & Quality Assurance
-**Status**: ⬜ Not Started
+**Status**: ✅ Complete
 **Objective**: Add automated tests for all engine modules to ensure correctness and prevent regressions
 **Deliverables**:
-- Unit tests for bayesian-engine, game-engine, rl-agent
-- Integration tests for simulation pipeline
-- IOC mapper edge case tests
-- Server API route tests
+- Unit tests for bayesian-engine, game-engine, rl-agent ✔
+- Integration tests for simulation pipeline ✔
+- IOC mapper edge case tests ✔
+- Server API route tests ✔
+
 
 ### Phase 2: Edge Case Hardening
 **Status**: ✅ Complete
@@ -37,19 +38,28 @@
 - Error boundary UI states ✔
 
 ### Phase 3: Experiment Automation
-**Status**: ⬜ Not Started
+**Status**: ✅ Complete
 **Objective**: Automate the experimental evaluation pipeline for thesis Chapter 6–7
 **Deliverables**:
-- Batch simulation runner (all 4 attacker types × 5 detection levels)
-- Statistical significance testing (confidence intervals, p-values)
-- CSV/JSON export of experiment results
-- Automated chart generation (convergence plots, ablation tables)
+- Batch simulation runner (all 4 attacker types × 5 detection levels) ✔
+- Statistical significance testing (confidence intervals, p-values) ✔
+- CSV/JSON export of experiment results ✔
+- Automated chart generation (convergence plots, ablation tables) ✔
 
 ### Phase 4: Thesis Defense Preparation
-**Status**: ⬜ Not Started
+**Status**: ✅ Complete
 **Objective**: Polish the system for live demonstration during thesis defense
 **Deliverables**:
-- Pre-loaded demo scenarios (known malicious IOCs for compelling demos)
-- Presentation mode (larger fonts, guided walkthrough)
-- Record demo video as backup
-- Final thesis report polish and committee feedback integration
+- Visual refinement (typography, glassmorphism, colors) ✔
+- Interaction polish (micro-animations, smooth transitions) ✔
+- Presentation mode (standardized fonts, responsive panels) ✔
+- Record demo video as backup (Deferred - UI polish prioritised)
+- Final thesis report polish and committee feedback integration (Ongoing)
+
+### Phase 6: OTX Connectivity Hardening
+**Status**: ✅ Complete
+**Objective**: Resolve intermittent timeout issues with AlienVault OTX feed.
+**Deliverables**:
+- [x] Implement 15s extended timeout
+- [x] Implement 3x retry mechanism with backoff
+- [x] Verify successful lookup under latency conditions

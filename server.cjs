@@ -11,6 +11,7 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const path = require('path');
+const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
@@ -25,24 +26,15 @@ app.use(express.static(path.join(__dirname)));
 const db = require('./js/engine/db-manager.cjs');
 db.initDB();
 
-// ─── Simulation Persistence ────────────────────────────────────────────────
-app.post('/api/sim/save', (req, res) => {
-    try {
-        const simId = db.saveSimulation(req.body);
-        res.json({ success: true, simId });
-    } catch (err) {
-        console.error('DB Error:', err);
-        res.status(500).json({ error: 'Failed to save simulation' });
-    }
-});
+// ─── History Dashboard Endpoints ───────────────────────────────────────────
 
-app.get('/api/sim/recent', (req, res) => {
+app.get('/api/history/summary', (req, res) => {
     try {
-        const results = db.getRecentSimulations(req.query.limit || 20);
-        res.json(results);
+        const summary = db.getHistorySummary();
+        res.json(summary);
     } catch (err) {
         console.error('DB Error:', err);
-        res.status(500).json({ error: 'Failed to fetch results' });
+        res.status(500).json({ error: 'Failed to fetch history summary' });
     }
 });
 
@@ -133,6 +125,29 @@ const apiLimiter = rateLimit({
 });
 app.use('/api/cti', apiLimiter);
 
+// ─── CTI Cache ─────────────────────────────────────────────────────────────
+const ctiCache = new Map();
+const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+function getCachedCTI(feed, ioc, type) {
+    const key = `${feed}:${type}:${ioc}`;
+    const cached = ctiCache.get(key);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+        return cached.data;
+    }
+    return null;
+}
+
+function setCachedCTI(feed, ioc, type, data) {
+    const key = `${feed}:${type}:${ioc}`;
+    ctiCache.set(key, { data, timestamp: Date.now() });
+    
+    if (ctiCache.size > 2000) { // Larger limit for granular cache
+        const oldestKey = ctiCache.keys().next().value;
+        ctiCache.delete(oldestKey);
+    }
+}
+
 // ─── Input Validation Helper ───────────────────────────────────────────────
 function validateInput(ioc, type, requireType = true) {
     if (!ioc) return 'Missing ioc parameter';
@@ -165,38 +180,45 @@ app.post('/api/cti/lookup', async (req, res) => {
 
     const results = {};
     const errors = {};
-    const selectedFeeds = feeds || ['otx', 'virustotal', 'abuseipdb'];
+    const selectedFeeds = feeds || ['otx', 'virustotal', 'abuseipdb', 'threatfox', 'malwarebazaar', 'ipapi'];
 
-    // Run all feed lookups in parallel
-    const promises = [];
+    // Run all feed lookups in parallel, checking cache for each
+    const promises = selectedFeeds.map(async (feed) => {
+        try {
+            // 1. Check Cache first
+            const cached = getCachedCTI(feed, ioc, type);
+            if (cached) {
+                results[feed] = cached;
+                return;
+            }
 
-    if (selectedFeeds.includes('otx')) {
-        promises.push(
-            lookupOTX(ioc, type)
-                .then(data => { results.otx = data; })
-                .catch(err => { errors.otx = err.message; })
-        );
-    }
+            // 2. Choose lookup function
+            let data = null;
+            if (feed === 'otx') data = await lookupOTX(ioc, type);
+            else if (feed === 'virustotal') data = await lookupVirusTotal(ioc, type);
+            else if (feed === 'abuseipdb' && (type === 'ip' || type === 'ipv4' || type === 'ipv6')) data = await lookupAbuseIPDB(ioc);
+            else if (feed === 'threatfox') data = await lookupThreatFox(ioc);
+            else if (feed === 'malwarebazaar' && (type === 'hash' || type === 'md5' || type === 'sha1' || type === 'sha256')) data = await lookupMalwareBazaar(ioc);
+            else if (feed === 'ipapi' && (type === 'ip' || type === 'ipv4' || type === 'ipv6')) data = await lookupIPAPI(ioc);
 
-    if (selectedFeeds.includes('virustotal')) {
-        promises.push(
-            lookupVirusTotal(ioc, type)
-                .then(data => { results.virustotal = data; })
-                .catch(err => { errors.virustotal = err.message; })
-        );
-    }
-
-    if (selectedFeeds.includes('abuseipdb') && (type === 'ip' || type === 'ipv4' || type === 'ipv6')) {
-        promises.push(
-            lookupAbuseIPDB(ioc)
-                .then(data => { results.abuseipdb = data; })
-                .catch(err => { errors.abuseipdb = err.message; })
-        );
-    }
+            if (data) {
+                results[feed] = data;
+                setCachedCTI(feed, ioc, type, data);
+            }
+        } catch (err) {
+            errors[feed] = err.message;
+        }
+    });
 
     await Promise.all(promises);
 
-    res.json({ ioc, type, results, errors, timestamp: new Date().toISOString() });
+    res.json({ 
+        ioc, 
+        type, 
+        results, 
+        errors, 
+        timestamp: new Date().toISOString() 
+    });
 });
 
 // ─── AlienVault OTX ────────────────────────────────────────────────────────
@@ -225,7 +247,14 @@ async function lookupOTX(ioc, type) {
     };
 
     const otxType = otxTypeMap[type.toLowerCase()] || 'IPv4';
-    const sections = ['general', 'reputation'];
+    
+    // OTX supports different sections for different indicator types
+    // reputation is only valid for IPv4/IPv6
+    const sections = ['general'];
+    if (otxType === 'IPv4' || otxType === 'IPv6') {
+        sections.push('reputation');
+    }
+
     const results = {};
     const sectionErrors = [];
 
@@ -235,12 +264,15 @@ async function lookupOTX(ioc, type) {
         const maxAttempts = 3;
         let success = false;
 
+        // Use longer timeout for reputation section (30s) vs others (15s)
+        const timeoutMs = section === 'reputation' ? 30000 : 15000;
+
         while (attempts < maxAttempts && !success) {
             attempts++;
             try {
                 const response = await fetch(url, {
                     headers: { 'X-OTX-API-KEY': apiKey, 'Accept': 'application/json' },
-                    signal: AbortSignal.timeout(15000)
+                    signal: AbortSignal.timeout(timeoutMs)
                 });
 
                 if (response.ok) {
@@ -254,7 +286,8 @@ async function lookupOTX(ioc, type) {
                     await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
                     continue;
                 } else {
-                    throw new Error(`HTTP ${response.status}`);
+                    const errorBody = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorBody} (URL: ${url})`);
                 }
             } catch (e) {
                 const isTimeout = e.name === 'TimeoutError' || e.name === 'AbortError';
@@ -263,6 +296,7 @@ async function lookupOTX(ioc, type) {
                     continue;
                 }
                 sectionErrors.push(`${section}: ${e.message}`);
+                console.error(`OTX Error [${section}]:`, e.message);
                 break;
             }
         }
@@ -393,7 +427,7 @@ async function lookupVirusTotal(ioc, type) {
                 : null
         };
     } catch (e) {
-        if (e.name === 'TimeoutError' || e.name === 'AbortError') throw new Error('VirusTotal API timed out after 8s');
+        if (e.name === 'TimeoutError' || e.name === 'AbortError') throw new Error('VirusTotal API timed out after 15s');
         throw e;
     }
 }
@@ -425,7 +459,12 @@ app.post('/api/cti/abuseipdb', async (req, res) => {
         const { ioc } = req.body;
         const validationError = validateInput(ioc, undefined, false);
         if (validationError) return res.status(400).json({ error: validationError });
+        
+        const cached = getCachedCTI('abuseipdb', ioc, 'ip');
+        if (cached) return res.json(cached);
+
         const data = await lookupAbuseIPDB(ioc);
+        if (data) setCachedCTI('abuseipdb', ioc, 'ip', data);
         res.json(data);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -477,10 +516,132 @@ async function lookupAbuseIPDB(ioc) {
             lastReportedAt: d.lastReportedAt || null
         };
     } catch (e) {
-        if (e.name === 'TimeoutError' || e.name === 'AbortError') throw new Error('AbuseIPDB timed out after 8s');
+        if (e.name === 'TimeoutError' || e.name === 'AbortError') throw new Error('AbuseIPDB timed out after 15s');
         throw e;
     }
 }
+
+// ─── No-Auth TI Feeds ──────────────────────────────────────────────────────
+async function lookupThreatFox(ioc) {
+    const url = 'https://threatfox-api.abuse.ch/api/v1/';
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            body: JSON.stringify({ query: 'search_ioc', search_term: ioc }),
+            signal: AbortSignal.timeout(15000)
+        });
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (data.query_status !== 'ok') return null;
+        
+        const results = data.data || [];
+        return {
+            source: 'threatfox',
+            ioc,
+            results: results.slice(0, 5).map(r => ({
+                id: r.id,
+                threat_type: r.threat_type,
+                threat_type_desc: r.threat_type_desc,
+                malware: r.malware_printable,
+                confidence: r.confidence_level,
+                tags: r.tags || [],
+                first_seen: r.first_seen,
+                last_seen: r.last_seen
+            })),
+            malicious_count: results.length
+        };
+    } catch (e) {
+        console.warn('ThreatFox lookup error:', e.message);
+        return null;
+    }
+}
+
+async function lookupMalwareBazaar(hash) {
+    const url = 'https://mb-api.abuse.ch/api/v1/';
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            body: JSON.stringify({ query: 'get_info', hash: hash }),
+            signal: AbortSignal.timeout(15000)
+        });
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (data.query_status !== 'ok') return null;
+
+        const d = data.data?.[0] || {};
+        return {
+            source: 'malwarebazaar',
+            hash,
+            file_name: d.file_name,
+            file_type: d.file_type,
+            signature: d.signature,
+            malware_family: d.intelligence?.malware_family,
+            tags: d.tags || [],
+            delivery_method: d.intelligence?.delivery_method,
+            origin_country: d.origin_country,
+            sha1: d.sha1,
+            sha256: d.sha256,
+            md5: d.md5
+        };
+    } catch (e) {
+        console.warn('MalwareBazaar lookup error:', e.message);
+        return null;
+    }
+}
+
+async function lookupIPAPI(ip) {
+    const url = `http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,message,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,query`;
+    try {
+        const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (data.status !== 'success') return null;
+        return {
+            source: 'ip-api',
+            ioc: ip,
+            country: data.country,
+            countryCode: data.countryCode,
+            city: data.city,
+            isp: data.isp,
+            org: data.org,
+            as: data.as,
+            lat: data.lat,
+            lon: data.lon,
+            timezone: data.timezone
+        };
+    } catch (e) {
+        console.warn('IP-API lookup error:', e.message);
+        return null;
+    }
+}
+
+// ─── RL Agent Q-Table Persistence ──────────────────────────────────────────
+const QTABLE_FILE = path.join(__dirname, 'data', 'q-table.json');
+
+app.get('/api/rl/q-table', (req, res) => {
+    try {
+        if (fs.existsSync(QTABLE_FILE)) {
+            const data = fs.readFileSync(QTABLE_FILE, 'utf-8');
+            res.json(JSON.parse(data));
+        } else {
+            res.status(404).json({ error: 'No saved Q-table found' });
+        }
+    } catch (err) {
+        console.error('Error reading Q-table:', err);
+        res.status(500).json({ error: 'Failed to read Q-table' });
+    }
+});
+
+app.post('/api/rl/q-table', (req, res) => {
+    try {
+        fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
+        fs.writeFileSync(QTABLE_FILE, JSON.stringify(req.body, null, 2));
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Error saving Q-table:', err);
+        res.status(500).json({ error: 'Failed to save Q-table' });
+    }
+});
 
 // ─── Start Server ──────────────────────────────────────────────────────────
 app.listen(PORT, () => {

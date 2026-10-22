@@ -1,7 +1,9 @@
 /**
  * Reinforcement Learning Agent — Q-Learning Defender
  * 
- * Learns optimal defender policy through repeated episodes of attacker-defender interaction.
+ * Learns optimal defender policy from historical IOC analysis experience.
+ * Training is driven by experience replay: stored (s, a, r, s', done) tuples
+ * collected during live IOC analysis are replayed through the Q-learning update rule.
  * Uses ε-greedy action selection with annealing for exploration vs exploitation.
  * 
  * State: (tactic_phase, belief_bucket, alert_severity, asset_criticality, last_action_idx)
@@ -22,7 +24,7 @@ const TACTIC_PHASES = 14;     // 14 ATT&CK tactic stages
  * Discretize a continuous belief state into a bucket index
  * Based on which attacker type has the highest probability
  */
-function discretizeBelief(belief) {
+export function discretizeBelief(belief) {
     let maxType = 0;
     let maxProb = 0;
     for (let i = 0; i < ATTACKER_TYPES.length; i++) {
@@ -38,7 +40,7 @@ function discretizeBelief(belief) {
 /**
  * Convert state components into a string key for Q-table lookup
  */
-function stateToKey(tacticPhase, beliefBucket, severity, criticality, lastActionIdx) {
+export function stateToKey(tacticPhase, beliefBucket, severity, criticality, lastActionIdx) {
     return `${tacticPhase}_${beliefBucket}_${severity}_${criticality}_${lastActionIdx}`;
 }
 
@@ -290,4 +292,77 @@ export function resetAgent(agent) {
     agent.totalReward = 0;
     agent.rewardHistory = [];
     agent.stepCount = 0;
+}
+
+/**
+ * Train the agent from a batch of stored IOC experience tuples.
+ * Experiences are shuffled (Fisher-Yates) to decorrelate temporal sequences.
+ * 
+ * @param {Object} agent - RL agent created by createAgent()
+ * @param {Array<Object>} experiences - DB-format tuples: { stateKey, actionIdx, reward, nextStateKey, done }
+ * @param {number} epochs - Number of passes over the entire batch (default 1)
+ * @returns {{ updatesApplied: number, avgReward: number, qTableSize: number }}
+ */
+export function trainFromReplayBatch(agent, experiences, epochs = 1) {
+    if (!experiences || experiences.length === 0) {
+        return { updatesApplied: 0, avgReward: 0, qTableSize: Object.keys(agent.qTable).length };
+    }
+
+    let totalReward = 0;
+    let updatesApplied = 0;
+
+    for (let epoch = 0; epoch < epochs; epoch++) {
+        // Fisher-Yates shuffle for decorrelated learning
+        const shuffled = experiences.slice();
+        for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+
+        let epochReward = 0;
+        for (const exp of shuffled) {
+            const sKey = exp.stateKey || exp.state_key;
+            const aIdx = typeof exp.actionIdx === 'number' ? exp.actionIdx : (exp.action_idx || 0);
+            const r = typeof exp.reward === 'number' ? exp.reward : 0;
+            const nsKey = exp.nextStateKey || exp.next_state_key || null;
+            const done = !!(exp.done);
+
+            if (!sKey) continue;
+
+            updateQValue(agent, sKey, aIdx, r, nsKey, done);
+            epochReward += r;
+            updatesApplied++;
+        }
+
+        totalReward += epochReward;
+        recordEpisodeReward(agent, epochReward);
+        decayEpsilon(agent);
+    }
+
+    return {
+        updatesApplied,
+        avgReward: Math.round((totalReward / epochs) * 100) / 100,
+        qTableSize: Object.keys(agent.qTable).length
+    };
+}
+
+/**
+ * Export Q-table and metadata for persistence
+ */
+export function exportQTable(agent) {
+    return {
+        qTable: agent.qTable,
+        epsilon: agent.currentEpsilon,
+        episodes: agent.episodeCount
+    };
+}
+
+/**
+ * Import a saved Q-table
+ */
+export function importQTable(agent, data) {
+    if (!data) return;
+    if (data.qTable) agent.qTable = data.qTable;
+    if (data.epsilon !== undefined) agent.currentEpsilon = data.epsilon;
+    if (data.episodes !== undefined) agent.episodeCount = data.episodes;
 }

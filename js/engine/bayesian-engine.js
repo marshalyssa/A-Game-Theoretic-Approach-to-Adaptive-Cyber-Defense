@@ -42,31 +42,41 @@ export function createBeliefState(prior = null) {
  * Update belief state using Bayes' theorem given an observed technique
  * P(type | observation) ∝ P(observation | type) × P(type)
  * 
+ * If wasDetected is false, it uses "Negative Evidence":
+ * P(type | no_obs) ∝ P(no_obs | type) × P(type)
+ * 
  * @param {Object} belief - current belief state
- * @param {string} observedTechniqueId - MITRE technique ID observed
+ * @param {string|null} observedTechniqueId - MITRE technique ID observed (if any)
+ * @param {boolean} wasDetected - whether a detection occurred
  * @returns {Object} updated belief state
  */
-export function updateBelief(belief, observedTechniqueId) {
+export function updateBelief(belief, observedTechniqueId, wasDetected = true) {
     const posterior = {};
     let totalPosterior = 0;
 
     for (const type of ATTACKER_TYPES) {
-        // Likelihood: P(technique | attacker_type)
-        const likelihood = getTechniqueLikelihood(type, observedTechniqueId);
-        // Prior: current belief
+        let likelihood = 1.0;
+
+        if (wasDetected && observedTechniqueId) {
+            // Positive likelihood: P(obs | type)
+            likelihood = getTechniqueLikelihood(type, observedTechniqueId);
+        } else if (!wasDetected) {
+            // Negative likelihood: P(no_obs | type)
+            // Stealthier types (like apt_state) have higher P(no_obs)
+            likelihood = getNegativeLikelihood(type);
+        }
+
         const prior = belief[type];
-        // Unnormalized posterior
         posterior[type] = likelihood * prior;
         totalPosterior += posterior[type];
     }
 
-    // Normalize to get proper probability distribution
+    // Normalize
     if (totalPosterior > 0) {
         for (const type of ATTACKER_TYPES) {
             posterior[type] /= totalPosterior;
         }
     } else {
-        // Fallback to uniform if all likelihoods are zero
         const uniform = 1 / ATTACKER_TYPES.length;
         for (const type of ATTACKER_TYPES) {
             posterior[type] = uniform;
@@ -77,15 +87,32 @@ export function updateBelief(belief, observedTechniqueId) {
 }
 
 /**
- * Batch update belief with multiple observations
- * @param {Object} belief - current belief state
- * @param {string[]} observedTechniqueIds - array of technique IDs
- * @returns {Object} updated belief state
+ * P(no_obs | type) — Probability of an execution NOT being detected
+ * Stealthy types have higher values (APT > Insider > Crime > Kiddie)
  */
-export function updateBeliefBatch(belief, observedTechniqueIds) {
+function getNegativeLikelihood(type) {
+    const profiles = {
+        'apt_state': 0.85,       // 85% chance to remain hidden
+        'insider_threat': 0.70,   // 70% chance to remain hidden
+        'organized_crime': 0.40,  // 40% chance to remain hidden
+        'script_kiddie': 0.15     // 15% chance to remain hidden
+    };
+    return profiles[type] || 0.5;
+}
+
+/**
+ * Batch update belief with multiple observations
+ */
+export function updateBeliefBatch(belief, observations) {
     let current = { ...belief };
-    for (const techId of observedTechniqueIds) {
-        current = updateBelief(current, techId);
+    for (const obs of observations) {
+        if (typeof obs === 'string') {
+            // Plain technique ID string
+            current = updateBelief(current, obs);
+        } else {
+            // Observation object { id, detected }
+            current = updateBelief(current, obs.id, obs.detected !== false);
+        }
     }
     return current;
 }
@@ -152,34 +179,53 @@ export function getMostProbableType(belief) {
 }
 
 /**
- * Predict the next technique probability distribution
- * Combines across attacker types weighted by belief, using transition matrix
+ * Predict the next technique using a Hidden Intent model (Simplified HMM)
+ * 1. Predict the likely next TACTIC (Intent) for each attacker type
+ * 2. Predict the likely next TECHNIQUE within those tactics
  * 
- * P(next_tech) = Σ_type [ P(type) × Σ_tech [ P(type_uses_tech) × P(next_tech | tech) ] ]
- * 
- * Simplified: given the last observed technique, predict next weighted by type beliefs
+ * P(next_tech) = Σ_type [ P(type) × Σ_tactic [ P(tactic | last_tech, type) × P(tech | tactic, type) ] ]
  * 
  * @param {Object} belief - current belief state
  * @param {string} lastTechniqueId - last observed technique
  * @returns {Object} { techniqueId: probability } distribution over next techniques
  */
 export function predictNextTechnique(belief, lastTechniqueId) {
-    // Get base transition distribution from the last technique
-    const transitionDist = getTransitionDistribution(lastTechniqueId);
+    const lastTech = TECHNIQUE_BY_ID[lastTechniqueId];
+    if (!lastTech) return {};
 
-    // Weight transitions by attacker type likelihood modifiers
+    const currentTacticId = lastTech.tacticId;
     const prediction = {};
     let total = 0;
 
-    for (const [techId, baseProb] of Object.entries(transitionDist)) {
-        let weightedProb = 0;
-        for (const type of ATTACKER_TYPES) {
-            const typeWeight = belief[type];
-            const typeLikelihood = getTechniqueLikelihood(type, techId);
-            weightedProb += typeWeight * typeLikelihood * baseProb;
+    for (const type of ATTACKER_TYPES) {
+        const typeWeight = belief[type];
+        if (typeWeight < 0.01) continue; // Skip negligible types
+
+        // 1. Get possible next tactics and their transition probabilities for this type
+        const nextTactics = getNextPossibleTactics(currentTacticId, type);
+
+        for (const [nextTacticId, tacticProb] of Object.entries(nextTactics)) {
+            // 2. Get likelihood of techniques within that tactic for this type
+            const techniques = TECHNIQUES_BY_TACTIC[nextTacticId] || [];
+            if (techniques.length === 0) continue;
+
+            const techLikelihoods = {};
+            let techTotal = 0;
+            for (const tech of techniques) {
+                const likelihood = getTechniqueLikelihood(type, tech.id);
+                // Factor in base transition from last technique if it exists
+                const transitionProb = getTransitionDistribution(lastTechniqueId)[tech.id] || 0.1;
+                techLikelihoods[tech.id] = likelihood * transitionProb;
+                techTotal += techLikelihoods[tech.id];
+            }
+
+            // 3. Accumulate weighted probabilities
+            for (const techId in techLikelihoods) {
+                const prob = typeWeight * tacticProb * (techLikelihoods[techId] / (techTotal || 1));
+                prediction[techId] = (prediction[techId] || 0) + prob;
+                total += prob;
+            }
         }
-        prediction[techId] = weightedProb;
-        total += weightedProb;
     }
 
     // Normalize
@@ -191,6 +237,48 @@ export function predictNextTechnique(belief, lastTechniqueId) {
 
     return prediction;
 }
+
+/**
+ * P(next_tactic | current_tactic, type)
+ * Models attacker intent flow based on profile progression data
+ */
+function getNextPossibleTactics(currentTacticId, type) {
+    const profile = ATTACKER_PROFILES[type];
+    const tacticsOrder = TACTIC_PHASES;
+    const currentIdx = tacticsOrder.indexOf(currentTacticId);
+
+    if (currentIdx === -1) return { [tacticsOrder[0]]: 1.0 };
+
+    const result = {};
+
+    // 1. Probability of staying/retrying (persistence)
+    const stayProb = profile ? profile.persistence * 0.4 : 0.2;
+    result[currentTacticId] = stayProb;
+
+    // 2. Probability of moving to next adjacent tactic
+    if (currentIdx + 1 < tacticsOrder.length) {
+        const nextTacticId = tacticsOrder[currentIdx + 1];
+        const progressProb = profile ? (profile.tacticProgression[nextTacticId] || 0.7) : 0.7;
+        result[nextTacticId] = (1 - stayProb) * progressProb;
+    }
+
+    // 3. Probability of skipping (stealth/evasion)
+    if (currentIdx + 2 < tacticsOrder.length) {
+        const skipTacticId = tacticsOrder[currentIdx + 2];
+        const skipProb = profile ? (1 - stayProb) * (1 - (profile.tacticProgression[tacticsOrder[currentIdx + 1]] || 0.7)) : 0.1;
+        result[skipTacticId] = skipProb;
+    }
+
+    // Normalize
+    let sum = 0;
+    for (const p of Object.values(result)) sum += p;
+    for (const t in result) result[t] /= sum;
+
+    return result;
+}
+
+import { TACTIC_PHASES, TECHNIQUES_BY_TACTIC } from '../data/mitre-catalog.js';
+import { ATTACKER_PROFILES } from '../data/attacker-profiles.js';
 
 /**
  * Get top-N predicted next techniques sorted by probability

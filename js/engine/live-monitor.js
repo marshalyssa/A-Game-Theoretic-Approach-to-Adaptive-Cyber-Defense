@@ -14,6 +14,7 @@ import { lookupIOC, extractAttackTechniques, assessThreatLevel, detectIOCType } 
 import { mapIOCToTechniques, inferTacticStage } from './ioc-mapper.js';
 import { createBeliefState, updateBelief, getBeliefEntropy, getMostProbableType, getTopPredictions } from './bayesian-engine.js';
 import { rankDefenderActions } from './game-engine.js';
+import { computeGlobalMultiThreatResponse } from './multi-agent-sim.js';
 
 /**
  * Create a new live analysis session
@@ -35,7 +36,8 @@ export function createLiveSession() {
             techniquesObserved: 0,
             highestThreat: 'NONE',
             avgThreatScore: 0
-        }
+        },
+        threatClusters: {} // Network vs Host vs Unknown clusters for Multi-Agent analysis
     };
 }
 
@@ -82,6 +84,22 @@ export async function analyzeIOC(session, ioc, type = null, feeds = ['otx', 'vir
         }
     }
 
+    // Assign to Threat Cluster (Multi-Agent Live Support)
+    const clusterClass = (iocType === 'ip' || iocType === 'domain' || iocType === 'url') ? 'network' : 'host';
+    if (!session.threatClusters[clusterClass]) {
+        session.threatClusters[clusterClass] = {
+            belief: createBeliefState(),
+            killChainCoverage: {},
+            lastTactic: null
+        };
+    }
+    const cluster = session.threatClusters[clusterClass];
+    for (const techId of techniqueIds) {
+        cluster.belief = updateBelief(cluster.belief, techId);
+        cluster.killChainCoverage[tacticStage] = true;
+        cluster.lastTactic = tacticStage;
+    }
+
     // Step 5: Predict Next Techniques
     if (progressCallback) progressCallback('predicting', 'Predicting next adversary techniques…');
 
@@ -98,15 +116,63 @@ export async function analyzeIOC(session, ioc, type = null, feeds = ['otx', 'vir
 
     let recommendations = [];
     if (predictions.length > 0) {
-        const predDist = {};
-        for (const pred of predictions) {
-            predDist[pred.id] = pred.probability;
+        recommendations = rankDefenderActions(predictions, session.metrics.detectionCoverage || 0.6);
+        
+        // Extract semantic threat context
+        let contextStr = 'the observed malicious activity';
+        if (directTechniques && directTechniques.length > 0) {
+            contextStr = directTechniques.map(t => t.name).slice(0,2).join(' and ');
+        } else if (mappedTechniques && mappedTechniques.length > 0) {
+            contextStr = mappedTechniques.map(t => t.name).slice(0,2).join(' and ');
+        } else if (enrichment?.results?.abuseipdb?.categories?.length > 0) {
+            contextStr = enrichment.results.abuseipdb.categories.slice(0,2).join(' or ');
         }
-        recommendations = rankDefenderActions(predDist, 0.5).slice(0, 5);
+
+        // Map abstract actions to NLP descriptions (Short & professional)
+        recommendations = recommendations.map(action => {
+            let newName = action.name;
+            switch(action.actionId) {
+                case 'monitor': newName = `Monitor connections involving ${ioc}.`; break;
+                case 'block_ip': newName = `Block ${ioc} at the perimeter firewall.`; break;
+                case 'isolate_host': newName = `Isolate internal hosts communicating with ${ioc}.`; break;
+                case 'patch_vuln': newName = `Patch systems vulnerable to ${contextStr}.`; break;
+                case 'deploy_edr': newName = `Ensure EDR coverage on hosts exposed to ${ioc}.`; break;
+                case 'hunt_threat': newName = `Hunt for ${contextStr} lateral movement from ${ioc}.`; break;
+                case 'deceive_honeypot': newName = `Deploy ${contextStr} decoys to observe ${ioc}.`; break;
+                case 'restrict_network': newName = `Segment network to prevent ${ioc} propagation.`; break;
+                case 'update_siem_rules': newName = `Deploy SIEM rules for ${contextStr} matching ${ioc}.`; break;
+                case 'rotate_credentials': newName = `Rotate compromised credentials preventing ${contextStr}.`; break;
+                case 'backup': newName = `Verify backups to prevent ${contextStr} impact.`; break;
+                case 'incident_response': newName = `Activate IR playbooks for ${ioc} infiltration.`; break;
+                case 'educate_users': newName = `Alert users to ${contextStr} attempts.`; break;
+                case 'full_lockdown': newName = `Initiate immediate zero-trust lockdown.`; break;
+                case 'accept_risk': newName = `Log ${contextStr} as a low-fidelity risk.`; break;
+                default: newName = `Evaluate ${action.name} for ${ioc}.`; break;
+            }
+            return { ...action, name: newName };
+        }).slice(0, 6);
     }
     session.recommendations = recommendations;
 
-    // Step 7: Update Session Metrics
+    // Step 7: Global Multi-Agent Optimization
+    // Combines the separate Network and Host threat clusters to find one globally robust action
+    const activeClusters = Object.values(session.threatClusters);
+    if (activeClusters.length > 1) {
+        session.globalMultiAgentStrategy = computeGlobalMultiThreatResponse(activeClusters);
+        
+        // Format the global action name for the UI
+        try {
+            const { DEFENDER_ACTIONS } = await import('../data/defender-actions.js');
+            const gid = session.globalMultiAgentStrategy.bestAction;
+            if (DEFENDER_ACTIONS[gid]) {
+                session.globalMultiAgentStrategy.bestGlobalAction = `Enforce global ${DEFENDER_ACTIONS[gid].name} logic addressing ${activeClusters.length} concurrent clusters`;
+            }
+        } catch (e) {
+            session.globalMultiAgentStrategy.bestGlobalAction = session.globalMultiAgentStrategy.bestAction;
+        }
+    }
+
+    // Step 8: Update Session Metrics
     session.metrics.totalIOCs++;
     if (threat.level === 'HIGH' || threat.level === 'CRITICAL') {
         session.metrics.maliciousIOCs++;

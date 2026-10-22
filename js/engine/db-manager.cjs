@@ -87,71 +87,6 @@ function initDB() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SIMULATION PERSISTENCE
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Save a complete simulation report
- */
-function saveSimulation(report) {
-    if (!db) initDB();
-
-    const insertSim = db.prepare(`
-        INSERT INTO simulations (
-            id, attacker_type, detection_coverage, use_rl, use_gt, 
-            log_loss, top3_hit_rate, detection_rate, prevention_rate, total_steps
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const insertStep = db.prepare(`
-        INSERT INTO simulation_steps (
-            sim_id, step, tactic_id, technique_id, detected, defender_action_id, reward
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const simId = `sim_${Date.now()}`;
-    const { metrics, config, history } = report;
-
-    const transaction = db.transaction((data) => {
-        insertSim.run(
-            simId,
-            data.config.attackerType,
-            data.config.detectionCoverage,
-            data.config.useRL ? 1 : 0,
-            data.config.useGameTheory ? 1 : 0,
-            data.metrics.logLoss || 0,
-            data.metrics.top3HitRate || 0,
-            data.metrics.detectionRate || 0,
-            data.metrics.preventionRate || 0,
-            data.metrics.totalSteps || 0
-        );
-
-        data.history.forEach(step => {
-            insertStep.run(
-                simId,
-                step.timestep,
-                step.tacticId,
-                step.technique.id,
-                step.detected ? 1 : 0,
-                step.defenderAction.id,
-                step.reward
-            );
-        });
-    });
-
-    transaction({ config, metrics, history });
-    return simId;
-}
-
-/**
- * Get recent simulations
- */
-function getRecentSimulations(limit = 10) {
-    if (!db) initDB();
-    return db.prepare('SELECT * FROM simulations ORDER BY timestamp DESC LIMIT ?').all(limit);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 //  IOC ANALYSIS PERSISTENCE
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -270,14 +205,40 @@ function getRLExperienceCount() {
     return db.prepare('SELECT COUNT(*) as count FROM ioc_rl_experiences').get().count;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  HISTORY DASHBOARD QUERIES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get combined history summary for dashboard
+ */
+function getHistorySummary() {
+    if (!db) initDB();
+
+    const iocStats = getIOCStats();
+    const rlCount = getRLExperienceCount();
+
+    // Recent IOC analyses (last 20)
+    const recentIOCs = db.prepare(
+        'SELECT id, ioc, type, threat_level, threat_score, most_probable_type, tactic_stage, defender_action, timestamp FROM ioc_analyses ORDER BY timestamp DESC LIMIT 20'
+    ).all();
+
+    return {
+        iocs: {
+            ...iocStats,
+            recent: recentIOCs
+        },
+        rlExperiences: rlCount
+    };
+}
+
 module.exports = {
     initDB,
-    saveSimulation,
-    getRecentSimulations,
     saveIOCAnalysis,
     getIOCHistory,
     getIOCStats,
     saveRLExperience,
     getRLExperiences,
-    getRLExperienceCount
+    getRLExperienceCount,
+    getHistorySummary
 };

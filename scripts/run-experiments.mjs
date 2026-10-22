@@ -17,6 +17,9 @@ import { createAgent } from '../js/engine/rl-agent.js';
 // Stats import
 import { ci95, pairedTTest, cohensD } from './stats.mjs';
 
+// Charts import
+import { generateConvergencePlot, generateAblationChart } from './charts.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -156,6 +159,26 @@ async function runExperiments() {
     // Export files
     fs.writeFileSync(OUTPUT_JSON, JSON.stringify(allResults, null, 2));
     fs.writeFileSync(OUTPUT_CSV, csvRows.join('\n'));
+
+    console.log('─────────────────────────────────────────────────────');
+    console.log('Generating Charts...');
+    const chartsDir = path.join(ROOT_DIR, 'experiments', 'charts');
+    if (!fs.existsSync(chartsDir)) fs.mkdirSync(chartsDir, { recursive: true });
+
+    // 1. Generate convergence plots for each attacker at 50% detection
+    for (const config of allResults.configs) {
+        if (config.detectionLevel === 0.5) {
+            const fileName = `convergence_${config.attackerType}.png`;
+            const filePath = path.join(chartsDir, fileName);
+            generateConvergencePlot(config, filePath);
+            console.log(` - Saved: experiments/charts/${fileName}`);
+        }
+    }
+
+    // 2. Generate ablation chart
+    const ablationPath = path.join(chartsDir, 'ablation.png');
+    generateAblationChart(allResults.configs, ablationPath);
+    console.log(` - Saved: experiments/charts/ablation.png`);
 
     console.log('─────────────────────────────────────────────────────');
     console.log(`Results saved to:`);

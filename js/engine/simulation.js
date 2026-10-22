@@ -334,9 +334,32 @@ function computeMetrics(state) {
             detectionRate: 0, preventionRate: 0, falsePositiveRate: 0,
             avgDefenderUtility: 0, avgAttackerUtility: 0,
             costEfficiency: 0, timeToDetection: -1, tacticsReached: 0,
-            maxTacticPhase: 0
+            maxTacticPhase: 0, logLoss: 0, top3HitRate: 0
         };
     }
+
+    // Accuracy Metrics
+    let totalLogLoss = 0;
+    let hitCount = 0;
+    let predictionSteps = 0;
+
+    state.history.forEach(step => {
+        if (step.observedTechniqueId && step.predictions && step.predictions.length > 0) {
+            predictionSteps++;
+            // Log Loss: -ln(P(observed))
+            const obsProb = step.predictions.find(p => p.id === step.observedTechniqueId)?.probability || 0.001;
+            totalLogLoss -= Math.log(obsProb);
+
+            // Top-3 Hit Rate
+            const top3 = step.predictions.slice(0, 3).map(p => p.id);
+            if (top3.includes(step.observedTechniqueId)) {
+                hitCount++;
+            }
+        }
+    });
+
+    const avgLogLoss = predictionSteps > 0 ? totalLogLoss / predictionSteps : 0;
+    const top3HitRate = predictionSteps > 0 ? hitCount / predictionSteps : 0;
 
     // Detection rate: fraction of steps where attacker was detected
     const detections = state.history.filter(s => s.detected).length;
@@ -382,6 +405,8 @@ function computeMetrics(state) {
         timeToDetection,
         tacticsReached,
         maxTacticPhase,
+        logLoss: Math.round(avgLogLoss * 1000) / 1000,
+        top3HitRate: Math.round(top3HitRate * 100) / 100,
         cumulativeDefenderUtility: Math.round(state.cumulativeDefenderUtility * 100) / 100,
         cumulativeAttackerUtility: Math.round(state.cumulativeAttackerUtility * 100) / 100
     };

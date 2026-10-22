@@ -1,2 +1,43 @@
+# Environment variables (sensitive)
 .env
+.env.local
+.env.*.local
+
+# Reports and private documents
 thesis_report.md
+*_report.md
+*.pdf
+*.docx
+
+# Node modules (regeneratable)
+node_modules/
+
+# Database files (large binary / runtime data)
+data/results.db
+data/results.db-shm
+data/results.db-wal
+
+# Log and error output files
+*.log
+*.txt
+err.txt
+ioc_err.txt
+rl_err.txt
+sim_err.txt
+train_err.txt
+train_out.txt
+final_train_out.txt
+server_log.txt
+test-output.txt
+test_output.log
+test_output.txt
+verify_out.txt
+
+# Backup directory
+backup/
+
+# Gemini/AI IDE workspace data
+.gemini/
+
+# GSD phase summaries (agent-generated internal docs)
+.gsd/phases/
